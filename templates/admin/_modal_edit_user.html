@@ -1,0 +1,82 @@
+<!-- Add / Edit Household User Profile Modal -->
+<div class="modal-overlay" id="editUserModal" style="display: none;">
+  <div class="modal-card" style="max-width: 460px;">
+    <div class="modal-header">
+      <h2 style="margin-bottom: 4px;" id="editUserModalTitle">✏️ Edit User Profile</h2>
+      <p class="text-secondary" style="margin-bottom: 16px;" id="editUserModalSubtitle">Update account details.</p>
+    </div>
+    <form id="editUserForm" onsubmit="event.preventDefault(); saveEditedUserProfile();">
+      <input type="hidden" id="editUserId">
+
+      <div class="form-group">
+        <label for="editUserUsername">Username</label>
+        <input type="text" id="editUserUsername" class="form-control" required autocomplete="off"
+          placeholder="username">
+      </div>
+
+      <div class="form-group">
+        <label for="editUserDisplayName">Display Name</label>
+        <input type="text" id="editUserDisplayName" class="form-control" autocomplete="off" placeholder="Friendly name">
+      </div>
+
+      <div class="form-group">
+        <label for="editUserEmail">Email Address</label>
+        <input type="email" id="editUserEmail" class="form-control" autocomplete="off" placeholder="user@example.com">
+      </div>
+
+      <div class="form-group">
+        <label for="editUserRole">Role</label>
+        <select id="editUserRole" class="form-control">
+          <option value="guest">Guest</option>
+          <option value="member">Member</option>
+          <option value="admin">Admin</option>
+          <option value="super_admin" id="editUserRoleSuperAdmin" style="display: none;">Super Admin</option>
+        </select>
+        <small id="editUserRoleHint" class="text-secondary"
+          style="display: none; font-size: 11px; margin-top: 4px;"></small>
+      </div>
+
+      <div class="form-group">
+        <label for="editUserAuthSource">Auth Source</label>
+        <select id="editUserAuthSource" class="form-control" onchange="onEditUserAuthSourceChange()">
+          <option value="">Local</option>
+          <option value="sso" id="editUserAuthSourceSso" style="display: none;">SSO</option>
+        </select>
+      </div>
+
+      <div class="form-group" id="editUserPasswordGroup">
+        <label for="editUserPassword" id="editUserPasswordLabel">New Password (Optional)</label>
+        <input type="password" id="editUserPassword" class="form-control" autocomplete="new-password"
+          placeholder="Leave blank to keep current (min 8 chars)">
+      </div>
+
+      <div class="form-group" id="editUserAbsGroup"
+        style="padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-color);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <label for="editUserAbsApiKey" style="margin: 0; font-size: 12px; font-weight: 600;">🎧 Audiobookshelf Account
+            (Optional)</label>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span class="badge badge-subtle" id="editUserAbsStatus" style="font-size: 11px;">Not linked</span>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnEditUserUnlinkAbs"
+              style="display: none; font-size: 10px; padding: 2px 6px;"
+              onclick="unlinkAdminUserAbsAccount()">Unlink</button>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="password" id="editUserAbsApiKey" class="form-control" autocomplete="off" style="flex: 1;"
+            placeholder="Paste user's personal ABS API key">
+          <button type="button" class="btn btn-secondary btn-sm" id="btnVerifyEditUserAbsKey"
+            onclick="verifyAdminUserAbsKey()">🔍 Detect Account</button>
+        </div>
+        <small id="editUserAbsHint" class="text-secondary"
+          style="display: block; font-size: 11px; margin-top: 6px;">Used when this user overrides a Target Player to
+          listen from their personal ABS library.</small>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button type="button" class="btn btn-secondary" onclick="closeEditUserModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="btnSaveEditUser">💾 Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>

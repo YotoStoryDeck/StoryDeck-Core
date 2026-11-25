@@ -1,0 +1,410 @@
+// ============================================================================
+// Hardware Displays (Tab 3)
+// ============================================================================
+
+let currentEditDeviceMac = null;
+
+async function loadDevices() {
+  try {
+    if (typeof fetchDiscoveredPlayers === "function") {
+      await fetchDiscoveredPlayers();
+    }
+    const res = await fetch("/api/admin/devices");
+    if (!res.ok) return;
+    currentDevices = await res.json();
+    renderDevicesTable();
+  } catch (err) {
+    console.error("Error loading devices:", err);
+  }
+}
+
+function getPlayerDisplayName(playerId) {
+  if (!playerId) return "";
+  if (Array.isArray(cachedDiscoveredPlayers)) {
+    const found = cachedDiscoveredPlayers.find(p => p.id === playerId);
+    if (found && found.name) return found.name;
+  }
+  return playerId;
+}
+
+function renderDevicesTable() {
+  const tbody = document.getElementById("devicesTableBody");
+  tbody.innerHTML = "";
+
+  if (currentDevices.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 24px;">No ESP32 controllers discovered yet. Power on your controller to connect.</td></tr>`;
+    return;
+  }
+
+  currentDevices.forEach(d => {
+    const tr = document.createElement("tr");
+    const safeMac = escapeHtml(d.mac_address).replace(/[:]/g, '');
+
+    // 1. Device Type Detection (Kiosk vs Touch)
+    const isKiosk = (d.mac_address && d.mac_address.startsWith("kiosk-")) ||
+                    (d.firmware_version && (d.firmware_version.includes("-web") || d.firmware_version.includes("kiosk"))) ||
+                    (d.friendly_name && d.friendly_name.toLowerCase().includes("kiosk"));
+
+    const typeBadge = isKiosk
+      ? `<span class="badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px;">🖥️ Tablet Kiosk</span>`
+      : `<span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px;">📟 ESP32 Touch</span>`;
+
+    // 2. Stacked Network & MAC
+    const ipDisplay = d.ip_address
+      ? `<span id="ping-${safeMac}" data-ip="${escapeHtml(d.ip_address)}" style="font-weight: 500;">${escapeHtml(d.ip_address)}</span>`
+      : `<span id="ping-${safeMac}" data-ip="" style="color: var(--text-muted);">No IP</span>`;
+
+    // 3. Engine / Firmware Version & Live OTA Status Pill
+    const rawFw = d.firmware_version ? d.firmware_version.trim() : "1.0.0";
+    const fwDisplay = rawFw.startsWith("v") ? rawFw : `v${rawFw}`;
+    const otaBadgeHtml = (typeof renderDeviceOtaBadge === "function") ? renderDeviceOtaBadge(d) : "";
+    const versionBadge = `
+      <div><span class="badge badge-subtle" style="font-family: monospace; font-size: 11px;">${escapeHtml(fwDisplay)}</span></div>
+      ${otaBadgeHtml}
+    `;
+
+    // 4. Profile display pill
+    let profileDisplay = `<span style="color: var(--text-muted);">None</span>`;
+    if (d.assigned_profile_id && currentProfiles[d.assigned_profile_id]) {
+      const p = currentProfiles[d.assigned_profile_id];
+      const avColor = p.avatar_color || "#3b82f6";
+      const initial = p.avatar_initial || (p.display_name ? p.display_name[0] : "P");
+      profileDisplay = `
+        <div style="display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.06); padding: 4px 10px; border-radius: 14px; border: 1px solid var(--border-color);">
+          <span style="display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: ${avColor}; color: #fff; font-size: 11px; font-weight: bold;">${escapeHtml(initial)}</span>
+          <span style="font-weight: 500;">${escapeHtml(p.display_name)}</span>
+        </div>
+      `;
+    }
+
+    // 5. Player display pill
+    let playerDisplay = `<span style="color: var(--text-muted);">None</span>`;
+    if (d.locked_player_id) {
+      const pName = getPlayerDisplayName(d.locked_player_id);
+      playerDisplay = `
+        <div style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.06); padding: 4px 10px; border-radius: 14px; border: 1px solid var(--border-color);">
+          <span style="color: #10b981; font-size: 10px;">●</span>
+          <span style="font-weight: 500;">${escapeHtml(pName)}</span>
+        </div>
+      `;
+    }
+
+    // 6. Interactive Status Badge Dropdown
+    const statusDropdown = `
+      <div class="dropdown-wrapper" style="position: relative; display: inline-block;">
+        <button type="button" class="badge ${d.is_approved ? 'badge-success' : 'badge-danger'} dropdown-toggle" style="cursor: pointer; padding: 4px 10px; border-radius: 999px; font-size: 11px; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; border: none;" onclick="toggleDeviceActionMenu(event, '${escapeHtml(d.mac_address)}')">
+          <span>${d.is_approved ? '● Approved' : '⚠️ Quarantined'}</span>
+          <span style="font-size: 9px; opacity: 0.8;">▾</span>
+        </button>
+        <div id="action-menu-${safeMac}" class="device-dropdown-menu" style="display: none; left: 0; right: auto;">
+          ${d.is_approved
+            ? `<button type="button" class="device-dropdown-item" onclick="closeAllDeviceActionMenus(); toggleDeviceApproval('${escapeHtml(d.mac_address)}', false)"><span>⚠️</span> Quarantine</button>`
+            : `<button type="button" class="device-dropdown-item" onclick="closeAllDeviceActionMenus(); toggleDeviceApproval('${escapeHtml(d.mac_address)}', true)"><span>✅</span> Approve Device</button>`
+          }
+          <button type="button" class="device-dropdown-item" onclick="closeAllDeviceActionMenus(); revokeDeviceAccess('${escapeHtml(d.mac_address)}')"><span>🔒</span> Revoke Access</button>
+          ${!isKiosk ? `
+            <div class="device-dropdown-divider"></div>
+            <button type="button" class="device-dropdown-item" onclick="closeAllDeviceActionMenus(); openPushFirmwareModal('${escapeHtml(d.mac_address)}')"><span>🚀</span> Push Firmware / Rollback</button>
+            <button type="button" class="device-dropdown-item" onclick="closeAllDeviceActionMenus(); fetchDeviceCacheStatus('${escapeHtml(d.mac_address)}')"><span>💾</span> Check MicroSD Status</button>
+            <button type="button" class="device-dropdown-item" onclick="closeAllDeviceActionMenus(); pruneDeviceCache('${escapeHtml(d.mac_address)}')"><span>🧹</span> Prune MicroSD Orphans</button>
+            <button type="button" class="device-dropdown-item text-danger" onclick="closeAllDeviceActionMenus(); purgeDeviceCache('${escapeHtml(d.mac_address)}')"><span>🗑️</span> Purge MicroSD Cache</button>
+          ` : ""}
+          <div class="device-dropdown-divider"></div>
+          <button type="button" class="device-dropdown-item text-danger" onclick="closeAllDeviceActionMenus(); deleteDevice('${escapeHtml(d.mac_address)}')"><span>🗑️</span> Delete Device</button>
+        </div>
+      </div>
+    `;
+
+    // 7. Actions Column (Edit + Ping)
+    const editBtn = `<button class="btn btn-primary btn-sm" title="Configure Profile, Player & Settings" onclick="openEditDeviceModal('${escapeHtml(d.mac_address)}')">⚙️ Edit</button>`;
+    const pingBtn = `<button class="btn btn-secondary btn-sm" title="Ping Device" onclick="pingSingleDevice('${escapeHtml(d.mac_address)}')">📡 Ping</button>`;
+
+    const actionBtns = `
+      <div class="device-actions-wrapper" style="display: flex; gap: 6px;">
+        ${editBtn}
+        ${pingBtn}
+      </div>
+    `;
+
+    tr.innerHTML = `
+      <td>
+        <div style="font-weight: 600; color: var(--text-primary); margin-bottom: 3px;">${escapeHtml(d.friendly_name)}</div>
+        <div>${typeBadge}</div>
+      </td>
+      <td>
+        <div>${ipDisplay}</div>
+        <div style="font-size: 11px; font-family: monospace; color: var(--text-secondary); margin-top: 2px;">
+          ${escapeHtml(d.mac_address)}
+        </div>
+        <div id="sd-status-${safeMac}" style="font-size: 11px; margin-top: 4px;"></div>
+      </td>
+      <td>${versionBadge}</td>
+      <td>${profileDisplay}</td>
+      <td>${playerDisplay}</td>
+      <td>${statusDropdown}</td>
+      <td style="white-space: nowrap;">${actionBtns}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  if (typeof syncOtaProgressPolling === "function") {
+    syncOtaProgressPolling();
+  }
+}
+
+async function toggleDeviceApproval(mac, approve) {
+  try {
+    await fetch(`/api/admin/devices/${encodeURIComponent(mac)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_approved: approve })
+    });
+    showToast(approve ? "Device approved!" : "Device placed in quarantine.");
+    loadDevices();
+  } catch (err) {
+    showToast("Failed to update device approval.", "danger");
+  }
+}
+
+// ============================================================================
+// Edit Device Modal Logic
+// ============================================================================
+
+async function openEditDeviceModal(mac) {
+  if (!Array.isArray(cachedDiscoveredPlayers) || cachedDiscoveredPlayers.length === 0) {
+    try {
+      const pRes = await fetch("/api/admin/discovery/players");
+      if (pRes.ok) cachedDiscoveredPlayers = await pRes.json();
+    } catch(e) {}
+  }
+  const d = currentDevices.find(x => x.mac_address === mac);
+  if (!d) return;
+
+  currentEditDeviceMac = mac;
+  document.getElementById("editDeviceFriendlyName").textContent = d.friendly_name || "ESP32 Controller";
+  document.getElementById("editDeviceMac").textContent = mac;
+  document.getElementById("editDeviceNameInput").value = d.friendly_name || "";
+  if (document.getElementById("editDevicePinInput")) {
+    document.getElementById("editDevicePinInput").value = d.parent_pin || "";
+  }
+
+  // Populate profiles dropdown
+  const profSelect = document.getElementById("editDeviceProfileSelect");
+  profSelect.innerHTML = `<option value="">-- Shared / Select at Boot --</option>`;
+  Object.keys(currentProfiles).forEach(pid => {
+    const selected = d.assigned_profile_id === pid ? "selected" : "";
+    profSelect.innerHTML += `<option value="${pid}" ${selected}>${escapeHtml(currentProfiles[pid].display_name)}</option>`;
+  });
+
+  populateEditDevicePlayers(d.assigned_profile_id, d.locked_player_id);
+
+  const modalEl = document.getElementById("editDeviceModal");
+  if (modalEl) modalEl.style.display = "flex";
+}
+
+function onEditDeviceProfileChange() {
+  const profId = document.getElementById("editDeviceProfileSelect").value;
+  const d = currentDevices.find(x => x.mac_address === currentEditDeviceMac);
+  const currentLock = d ? d.locked_player_id : "";
+  populateEditDevicePlayers(profId, currentLock);
+}
+
+function populateEditDevicePlayers(profId, selectedPlayerId) {
+  const playerSelect = document.getElementById("editDevicePlayerSelect");
+  playerSelect.innerHTML = `<option value="">-- No Player Assigned --</option>`;
+
+  const prof = currentProfiles[profId];
+  const preferredId = (prof && prof.default_player_id) ? prof.default_player_id : "";
+  const profPlayerIds = (prof && Array.isArray(prof.player_ids)) ? prof.player_ids : [];
+
+  let players = Array.isArray(cachedDiscoveredPlayers) ? [...cachedDiscoveredPlayers] : [];
+  if (players.length === 0 && selectedPlayerId) {
+    players.push({ id: selectedPlayerId, name: getPlayerDisplayName(selectedPlayerId), online: true });
+  }
+
+  let matched = false;
+  players.forEach(p => {
+    const isPreferred = (p.id === preferredId) || profPlayerIds.includes(p.id);
+    const isSel = (p.id === selectedPlayerId) || (!matched && !selectedPlayerId && isPreferred);
+    if (isSel) matched = true;
+    const statusText = p.online ? "Online" : "Offline";
+    const label = `${p.name || p.id}${isPreferred ? " (Profile Default)" : ""} • ${statusText}`;
+    playerSelect.innerHTML += `<option value="${escapeHtml(p.id)}" ${isSel ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  });
+}
+
+function closeEditDeviceModal() {
+  currentEditDeviceMac = null;
+  const modalEl = document.getElementById("editDeviceModal");
+  if (modalEl) modalEl.style.display = "none";
+}
+
+async function submitEditDevice() {
+  if (!currentEditDeviceMac) return;
+  const friendlyName = (document.getElementById("editDeviceNameInput").value || "").trim();
+  const assignedProfile = document.getElementById("editDeviceProfileSelect").value || null;
+  const lockedPlayer = document.getElementById("editDevicePlayerSelect").value || "";
+  const pinInput = document.getElementById("editDevicePinInput");
+  const parentPin = (pinInput ? pinInput.value : "").trim();
+
+  if (parentPin && !/^\d{4}$/.test(parentPin)) {
+    showToast("Parent PIN must be exactly 4 numeric digits (or blank to disable).", "danger");
+    if (pinInput) pinInput.focus();
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/admin/devices/${encodeURIComponent(currentEditDeviceMac)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        friendly_name: friendlyName,
+        assigned_profile_id: assignedProfile,
+        locked_player_id: lockedPlayer,
+        lock_player: lockedPlayer ? 1 : 0,
+        parent_pin: parentPin
+      })
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      showToast("Device configuration saved!", "success");
+      closeEditDeviceModal();
+      loadDevices();
+    } else {
+      showToast(data.error || "Failed to save device settings.", "danger");
+    }
+  } catch (err) {
+    showToast("Network error saving device settings.", "danger");
+  }
+}
+
+async function revokeDeviceAccess(mac) {
+  if (!confirm(`Are you sure you want to revoke all access tokens for ESP32 device ${mac}? The controller will immediately be returned to pairing quarantine.`)) {
+    return;
+  }
+  try {
+    const res = await fetch(`/api/admin/devices/${encodeURIComponent(mac)}/revoke`, {
+      method: "POST"
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      showToast("Device tokens revoked. Controller placed in quarantine.", "success");
+      loadDevices();
+    } else {
+      showToast(data.error || "Failed to revoke device.", "danger");
+    }
+  } catch (err) {
+    showToast("Network error revoking device.", "danger");
+  }
+}
+
+// ============================================================================
+// Device Management (Delete, Ping, Prune)
+// ============================================================================
+
+async function deleteDevice(mac) {
+  if (!confirm(`Are you sure you want to remove device ${mac} from the controller list? If online, it will re-announce itself.`)) {
+    return;
+  }
+  try {
+    const res = await fetch(`/api/admin/devices/${encodeURIComponent(mac)}`, {
+      method: "DELETE"
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      showToast(`Device ${mac} deleted.`, "success");
+      loadDevices();
+    } else {
+      showToast(data.error || "Failed to delete device.", "danger");
+    }
+  } catch (err) {
+    showToast("Network error deleting device.", "danger");
+  }
+}
+
+async function pingSingleDevice(mac) {
+  const elId = "ping-" + mac.replace(/:/g, "");
+  const el = document.getElementById(elId);
+  const baseIp = (el?.dataset.ip) || (el ? el.textContent.split(/[●•]/)[0].trim() : "");
+  if (el) el.innerHTML = `${escapeHtml(baseIp || "Unknown")} <span class="spinner-border spinner-border-sm" style="width: 0.85rem; height: 0.85rem;"></span>`;
+  try {
+    const res = await fetch(`/api/admin/devices/${encodeURIComponent(mac)}/ping`);
+    const data = await res.json();
+    if (res.ok && data.online) {
+      const displayIp = data.ip || baseIp || "Online";
+      if (el) {
+        el.dataset.ip = data.ip || baseIp;
+        el.innerHTML = `${escapeHtml(displayIp)} <span style="color: #10b981; font-weight: bold;">● Online</span>`;
+      }
+      showToast(`Device ${mac} is ONLINE at ${displayIp}`, "success");
+    } else {
+      showToast(`Device ${mac} is OFFLINE (${data.error || 'unreachable'})`, "warning");
+      if (el) {
+        el.innerHTML = `${escapeHtml(baseIp || "Unknown")} <span style="color: #ef4444; font-weight: bold;">● Offline</span>`;
+      }
+    }
+  } catch (err) {
+    showToast(`Failed to ping ${mac}`, "danger");
+    if (el) el.innerHTML = `${escapeHtml(baseIp || "Unknown")} <span style="color: #ef4444; font-weight: bold;">● Offline</span>`;
+  }
+}
+
+async function pingAllDevices() {
+  if (!currentDevices || currentDevices.length === 0) {
+    showToast("No devices to ping.", "info");
+    return;
+  }
+  showToast(`Pinging ${currentDevices.length} device(s)...`, "info");
+  for (const d of currentDevices) {
+    await pingSingleDevice(d.mac_address);
+  }
+}
+
+async function pruneStaleDevices() {
+  if (!confirm("Are you sure you want to remove all unapproved devices that have been inactive for over 48 hours?")) {
+    return;
+  }
+  try {
+    const res = await fetch("/api/admin/devices/prune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hours: 48 })
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      showToast(data.message || `Pruned ${data.pruned} inactive device(s).`, "success");
+      loadDevices();
+    } else {
+      showToast(data.error || "Failed to prune inactive devices.", "danger");
+    }
+  } catch (err) {
+    showToast("Network error pruning devices.", "danger");
+  }
+}
+
+
+// ============================================================================
+// Device Actions Dropdown Toggle & Auto-Close
+// ============================================================================
+
+function toggleDeviceActionMenu(event, mac) {
+  event.stopPropagation();
+  const safeMac = mac.replace(/[:]/g, '');
+  const menu = document.getElementById(`action-menu-${safeMac}`);
+  const isCurrentlyOpen = menu && menu.style.display !== "none";
+  closeAllDeviceActionMenus();
+  if (menu && !isCurrentlyOpen) {
+    menu.style.display = "flex";
+  }
+}
+
+function closeAllDeviceActionMenus() {
+  document.querySelectorAll(".device-dropdown-menu").forEach(m => {
+    m.style.display = "none";
+  });
+}
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".dropdown-wrapper")) {
+    closeAllDeviceActionMenus();
+  }
+});

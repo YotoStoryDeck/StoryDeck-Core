@@ -1,0 +1,182 @@
+    <!-- Shared Collapsible Side Navigation (Centralized for Parent Portal & Admin Console) -->
+    <aside class="app-sidebar" id="appSidebar" aria-label="{{ 'Admin Console Navigation' if nav_context == 'admin' else 'Parent Portal Navigation' }}">
+      <div class="sidebar-header">
+        {% if nav_context == 'admin' %}
+        <a href="/admin#profiles" class="sidebar-brand" onclick="switchTab('profiles'); return false;">
+        {% else %}
+        <a href="/" class="sidebar-brand">
+        {% endif %}
+          <div class="sidebar-brand-icon">📻</div>
+          <div class="sidebar-brand-text">
+            <span class="sidebar-brand-title">StoryDeck Core</span>
+            <span class="sidebar-brand-sub">{{ 'Admin Console' if nav_context == 'admin' else 'Parent Portal' }}</span>
+          </div>
+        </a>
+        <button type="button" id="sidebarCollapseBtn" class="sidebar-icon-btn sidebar-collapse-btn"
+          onclick="toggleSidebarCollapse()" title="Collapse menu" aria-expanded="true">
+          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none"
+            stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <button type="button" id="sidebarMobileCloseBtn" class="sidebar-icon-btn sidebar-mobile-close-btn"
+          onclick="closeMobileSidebar()" title="Close menu" aria-label="Close navigation menu">
+          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none"
+            stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <nav class="sidebar-nav">
+        {% if nav_context == 'admin' %}
+        <div class="sidebar-section-label">Management</div>
+        <button type="button" class="sidebar-nav-item tab-btn active" data-tab="profiles" title="Profiles" onclick="switchTab('profiles')">
+          <span class="sidebar-icon">👤</span>
+          <span class="sidebar-label">Profiles</span>
+        </button>
+        <button type="button" class="sidebar-nav-item tab-btn" data-tab="library" title="Library" onclick="switchTab('library')">
+          <span class="sidebar-icon">📚</span>
+          <span class="sidebar-label">Library</span>
+        </button>
+        <button type="button" class="sidebar-nav-item tab-btn" data-tab="hardware" title="Hardware Displays" onclick="switchTab('hardware')">
+          <span class="sidebar-icon">🖥️</span>
+          <span class="sidebar-label">Hardware Displays</span>
+        </button>
+        <button type="button" class="sidebar-nav-item tab-btn" data-tab="users" title="Users & Access" onclick="switchTab('users')">
+          <span class="sidebar-icon">👥</span>
+          <span class="sidebar-label">Users &amp; Access</span>
+        </button>
+        <button type="button" class="sidebar-nav-item tab-btn" data-tab="settings" title="Settings & Diagnostics" onclick="switchTab('settings')">
+          <span class="sidebar-icon">⚙️</span>
+          <span class="sidebar-label">Settings &amp; Diagnostics</span>
+        </button>
+
+        <div class="sidebar-section-label">Switch Portal</div>
+        <a href="/" class="sidebar-nav-item sidebar-nav-link" id="navLinkPortal" title="Parent Portal">
+          <span class="sidebar-icon">▶️</span>
+          <span class="sidebar-label">Parent Portal</span>
+          <span class="sidebar-link-arrow">↗</span>
+        </a>
+        {% else %}
+        <div class="sidebar-section-label">Portal</div>
+        <button type="button" class="sidebar-nav-item active" id="navTabPlayer" data-tab="player" title="Player"
+          onclick="switchTab('player')">
+          <span class="sidebar-icon">▶️</span>
+          <span class="sidebar-label">Player</span>
+        </button>
+        <button type="button" class="sidebar-nav-item" id="navTabLibrary" data-tab="library" title="Library"
+          onclick="switchTab('library')">
+          <span class="sidebar-icon">📚</span>
+          <span class="sidebar-label">Library</span>
+        </button>
+        <button type="button" class="sidebar-nav-item" id="navTabCards" data-tab="cards" title="Cards"
+          onclick="switchTab('cards')">
+          <span class="sidebar-icon">💳</span>
+          <span class="sidebar-label">Cards</span>
+        </button>
+        <button type="button" class="sidebar-nav-item" id="navTabPlaylists" data-tab="playlists" title="Playlists"
+          onclick="switchTab('playlists')">
+          <span class="sidebar-icon">☁️</span>
+          <span class="sidebar-label">Playlists</span>
+        </button>
+
+        <div class="sidebar-section-label">Switch Portal</div>
+        <a href="/admin" class="sidebar-nav-item sidebar-nav-link" id="navLinkAdmin" title="Admin Console">
+          <span class="sidebar-icon">⚙️</span>
+          <span class="sidebar-label">Admin Console</span>
+          <span class="sidebar-link-arrow">↗</span>
+        </a>
+        {% endif %}
+        <a href="/kiosk" class="sidebar-nav-item sidebar-nav-link" id="navLinkKiosk" title="Wall Kiosk">
+          <span class="sidebar-icon">🎛️</span>
+          <span class="sidebar-label">Wall Kiosk</span>
+          <span class="sidebar-link-arrow">↗</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-footer-card">
+          <span class="sidebar-footer-dot online"></span>
+          <div class="sidebar-footer-details" id="sidebarUserIdentity">
+            <span class="sidebar-footer-name" id="sidebarUserName">{{ 'Administrator' if nav_context == 'admin' else 'Household Access' }}</span>
+            <span class="sidebar-footer-role" id="sidebarUserRole">{{ 'Signed in • Admin' if nav_context == 'admin' else 'Connected' }}</span>
+          </div>
+        </div>
+        <a href="/login?next=/" id="sidebarLoginBtn" class="btn btn-primary btn-sm"
+          style="display: none; width: 100%; margin-top: 8px; justify-content: center; text-decoration: none; font-size: 12px;"
+          title="Sign in with a household account">🔐 Sign In</a>
+        {% if nav_context == 'admin' %}
+        <div id="sidebarUserActions" style="display: flex; gap: 6px; margin-top: 8px;">
+        {% else %}
+        <div id="sidebarUserActions" style="display: none; gap: 6px; margin-top: 8px;">
+        {% endif %}
+          <button type="button" class="btn btn-secondary btn-sm" style="flex: 1; font-size: 11px; padding: 5px 8px;"
+            onclick="openSelfServiceProfileModal()" title="Edit your profile">✏️ Profile</button>
+          <button type="button" class="btn btn-secondary btn-sm" style="flex: 1; font-size: 11px; padding: 5px 8px;"
+            onclick="logoutCurrentUser()" title="Sign out">🚪 Log Out</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Centralized Self-Service Edit Profile Modal (Shared across Portal & Admin) -->
+    <div class="modal-overlay" id="portalEditProfileModal" style="display: none;">
+      <div class="modal-card" style="max-width: 420px;">
+        <div class="modal-header">
+          <h2 style="margin-bottom: 4px;">✏️ Edit My Profile</h2>
+          <p class="text-secondary" style="margin-bottom: 16px;" id="portalProfileSubtitle">Update your display name,
+            email, or password.</p>
+        </div>
+        <form id="portalEditProfileForm" onsubmit="event.preventDefault(); savePortalProfile();">
+          <div class="form-group">
+            <label for="portalEditDisplayName">Display Name</label>
+            <input type="text" id="portalEditDisplayName" class="form-control" autocomplete="off"
+              placeholder="Friendly name">
+          </div>
+          <div class="form-group">
+            <label for="portalEditEmail">Email Address</label>
+            <input type="email" id="portalEditEmail" class="form-control" autocomplete="off"
+              placeholder="user@example.com">
+          </div>
+          <div class="form-group">
+            <label for="portalEditPassword">New Password (Optional)</label>
+            <input type="password" id="portalEditPassword" class="form-control" autocomplete="new-password"
+              placeholder="Leave blank to keep current (min 8 chars)">
+          </div>
+          <div class="form-group" id="portalEditAbsGroup"
+            style="padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-color);">
+            <div
+              style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+              <label for="portalEditAbsApiKey" style="margin: 0; font-size: 12px; font-weight: 600;">🎧 Audiobookshelf
+                Account</label>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span class="badge badge-subtle" id="portalEditAbsStatus" style="font-size: 11px;">Not linked</span>
+                <button type="button" class="btn btn-primary btn-sm" id="btnAutoMatchPortalAbs"
+                  style="font-size: 11px; padding: 3px 8px;" onclick="autoMatchPortalAbsAccount()">🔗 Auto-Match
+                  ABS</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnPortalUnlinkAbs"
+                  style="display: none; font-size: 10px; padding: 2px 6px;"
+                  onclick="unlinkPortalAbsAccount()">Unlink</button>
+              </div>
+            </div>
+            <small id="portalEditAbsHint" class="text-secondary"
+              style="display: block; font-size: 11px; margin-bottom: 6px;">Matches your email or username in
+              Audiobookshelf and automatically provisions a scoped user API key.</small>
+            <details id="portalEditAbsAdvancedDetails" style="font-size: 11px; color: var(--text-secondary);">
+              <summary style="cursor: pointer; user-select: none;">Advanced: Paste Custom ABS API Key</summary>
+              <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px;">
+                <input type="password" id="portalEditAbsApiKey" class="form-control" autocomplete="off" style="flex: 1;"
+                  placeholder="Paste personal ABS API key (optional)">
+                <button type="button" class="btn btn-secondary btn-sm" id="btnVerifyPortalAbsKey"
+                  onclick="verifyPortalAbsKey()">🔍 Detect Key</button>
+              </div>
+            </details>
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+            <button type="button" class="btn btn-secondary" onclick="closePortalProfileModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="btnSavePortalProfile">💾 Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>

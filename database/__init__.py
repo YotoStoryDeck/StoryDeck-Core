@@ -1,0 +1,69 @@
+"""
+StoryDeck Core Database Package - Modular SQLite Persistence Layer (WAL Mode).
+Maintains 100% backward compatibility for all `import database` consumers.
+"""
+from .connection import get_db_connection, DB_PATH, LEGACY_CONFIG_PATH, DB_DEFAULT, CONFIG_DEFAULT, IS_DOCKER, logger
+from .schema import init_db, run_schema_migrations, migrate_legacy_config
+from .auth import (
+    hash_password, verify_password, get_admin_user_count, create_admin_user,
+    authenticate_user, get_user_by_username, get_user_by_username_ci,
+    get_user_by_email, get_user_by_sso_subject, list_admin_users,
+    get_user_by_id, update_user_username, update_user_email, update_user_role,
+    update_user_password, update_user_display_name, update_user_sso_provider,
+    update_user_sso_identity, bind_user_sso_subject, delete_user,
+    update_user_abs_account, get_user_abs_credentials
+)
+from .profiles import (
+    get_all_profiles, get_profile_by_id, upsert_profile, delete_profile,
+    get_shared_rules, set_shared_rule
+)
+from .devices import (
+    register_esp32_device, get_esp32_device, list_esp32_devices, update_esp32_device,
+    revoke_esp32_device, delete_esp32_device, prune_stale_devices
+)
+from .media import (
+    upsert_media_items, get_media_item_by_id, get_catalog_matrix, prune_stale_media_items,
+    record_playback, get_playback_history,
+    get_all_series_overrides, set_media_series_override, delete_media_series_override,
+    batch_set_media_series_overrides
+)
+from .curation import (
+    sanitize_display_text, get_catalog_items_for_profile, set_item_highlight,
+    batch_update_media_highlight, set_item_physical, batch_update_media_physical,
+    batch_update_profile_media_permissions
+)
+from .settings import (
+    DEFAULT_SSO_CONFIG, get_system_settings, get_sso_config, set_system_setting, get_api_credentials, update_api_credentials,
+    get_master_api_key_details, get_master_api_key, regenerate_master_api_key
+)
+from .firmware import (
+    list_firmware_releases, get_firmware_release, get_latest_firmware_release,
+    upsert_firmware_release, set_active_latest_firmware, delete_firmware_release
+)
+
+__all__ = [
+    "get_db_connection", "DB_PATH", "LEGACY_CONFIG_PATH", "DB_DEFAULT", "CONFIG_DEFAULT", "IS_DOCKER", "logger",
+    "init_db", "run_schema_migrations", "migrate_legacy_config",
+    "hash_password", "verify_password", "get_admin_user_count", "create_admin_user",
+    "authenticate_user", "get_user_by_username", "get_user_by_username_ci",
+    "get_user_by_email", "get_user_by_sso_subject", "list_admin_users",
+    "get_user_by_id", "update_user_username", "update_user_email", "update_user_role",
+    "update_user_password", "update_user_display_name", "update_user_sso_provider",
+    "update_user_sso_identity", "bind_user_sso_subject", "delete_user",
+    "update_user_abs_account", "get_user_abs_credentials",
+    "get_all_profiles", "get_profile_by_id", "upsert_profile", "delete_profile",
+    "get_shared_rules", "set_shared_rule",
+    "register_esp32_device", "get_esp32_device", "list_esp32_devices", "update_esp32_device",
+    "revoke_esp32_device", "delete_esp32_device", "prune_stale_devices",
+    "upsert_media_items", "get_media_item_by_id", "get_catalog_matrix", "prune_stale_media_items",
+    "record_playback", "get_playback_history",
+    "get_all_series_overrides", "set_media_series_override", "delete_media_series_override",
+    "batch_set_media_series_overrides",
+    "sanitize_display_text", "get_catalog_items_for_profile", "set_item_highlight",
+    "batch_update_media_highlight", "set_item_physical", "batch_update_media_physical",
+    "batch_update_profile_media_permissions",
+    "DEFAULT_SSO_CONFIG", "get_system_settings", "get_sso_config", "set_system_setting", "get_api_credentials", "update_api_credentials",
+    "get_master_api_key_details", "get_master_api_key", "regenerate_master_api_key",
+    "list_firmware_releases", "get_firmware_release", "get_latest_firmware_release",
+    "upsert_firmware_release", "set_active_latest_firmware", "delete_firmware_release",
+]
