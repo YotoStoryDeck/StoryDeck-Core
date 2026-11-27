@@ -1,88 +1,53 @@
 """
-Offline Transcoding Engine, 5-Hour Rolling Window ('next'), Whole-Book/Series Planner,
-Live Mixed Playlist Batching, Offline MQTT->ABS Progress Sync, and Ephemeral Cache Pruner.
+Offline Transcoding Engine & Job Lifecycle Manager.
+Delegates track planning to OfflinePlannerMixin, MQTT progress/series rolling to OfflineSyncMixin,
+and LRU eviction to offline_pruner.py.
 """
 from __future__ import annotations
 
 import json
 import logging
+import shutil
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import clients
 import database
-from .chapters import (
-    DEFAULT_OFFLINE_TRACK_SECONDS,
-    DEFAULT_PART_SECONDS,
-    MAX_OFFLINE_NEXT_TRACKS,
-    WHOLE_TRACKS,
-    YOTO_MAX_TRACK,
-    chapter_spans,
-    chapter_units,
-    min_tracks,
-    plan_segments,
-    plan_whole,
-)
-from .icons import get_or_upload_yoto_icon, upload_abs_cover_to_yoto
+from .icons import get_or_upload_yoto_icon, resolve_source_chapter_idx, upload_abs_cover_to_yoto
 from .manager import get_bridge_manager
-from .mqtt_client import get_mqtt_bridge
-from .series import (
-    get_effective_item_progress,
-    patch_effective_item_progress,
-    resolve_slot_series_chain,
+from .offline_planner import (
+    DEFAULT_LOOKBACK_HOURS,
+    DEFAULT_REWIND_SECONDS,
+    OFFLINE_MODES,
+    OfflinePlannerMixin,
+    _extract_slot_base_url,
+    _hms,
+    normalize_offline_submode,
+    resolve_series_packing,
 )
+from .offline_pruner import prune_evicted_profile_playlists
+from .offline_sync import OFFLINE_SYNC_INTERVAL, OfflineSyncMixin
 from .streamer import AudioStreamer, AudioTrackSource
 
 logger = logging.getLogger("storydeck.bridge.offline")
-
-OFFLINE_MODES = ("next", "book", "series")
 LIVE_BATCH = 5
 LIVE_SECONDS = 120.0
-DEFAULT_REWIND_SECONDS = 15.0
-DEFAULT_LOOKBACK_HOURS = 1.5
-OFFLINE_SYNC_INTERVAL = 15.0
 
 
-def _hms(sec: float) -> str:
-    s = max(0, int(sec))
-    return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
-
-
-def normalize_offline_submode(raw_mode: Optional[str], slot: Optional[Dict[str, Any]] = None) -> str:
-    """
-    Maps UI/API delivery mode strings to one of ('next', 'book', 'series'):
-    - 'offline_next' | 'next' | '5h' | 'hours' -> 'next' (5-hour rolling window from ABS resume point)
-    - 'offline_series' | 'series' -> 'series' (whole series packed into <= 99 tracks)
-    - 'offline_book' | 'book' | 'offline' -> 'book' (or slot's stored offline_mode if in OFFLINE_MODES)
-    """
-    m = str(raw_mode or "").strip().lower()
-    if m in ("next", "offline_next", "offline_5h", "5h", "hours", "rolling"):
-        return "next"
-    if m in ("series", "offline_series"):
-        return "series"
-    if m in ("book", "offline_book"):
-        return "book"
-    if slot:
-        stored = str(slot.get("offline_mode") or "").strip().lower()
-        if stored in OFFLINE_MODES:
-            return stored
-        if str(slot.get("group_kind") or "") == "series":
-            return "next"
-    return "book"
-
-
-class OfflineTranscodeManager:
+class OfflineTranscodeManager(OfflinePlannerMixin, OfflineSyncMixin):
     """
     Manages background transcoding and upload jobs for offline Yoto cards:
-    - Supports 'next' (5h rolling window), 'book' (whole book <=99 tracks), and 'series' (whole series <=99 tracks).
+    - Supports 'next' (5h rolling window), 'book' (whole book <=99 tracks), and 'series' (whole series <=100 tracks).
     - Publishes hybrid mixed playlists (`save_mixed_playlist`) every 5 tracks / 120s while building.
-    - Tracks MQTT playback events on offline cards (`on_mqtt_event`) to sync listening progress back to ABS
-      and auto-jump whole-book copies to the listener's saved ABS position.
+    - Tracks MQTT playback events on offline cards (`on_mqtt_event`) via OfflineSyncMixin.
     """
 
     def __init__(self):
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._pause_flags: Dict[str, threading.Event] = {}
+        self._cancel_flags: Dict[str, threading.Event] = {}
+        self._job_gen: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._queue_sem = threading.Semaphore(1)
 
@@ -96,7 +61,7 @@ class OfflineTranscodeManager:
     def is_busy(self, slot_id: str) -> bool:
         with self._lock:
             job = self._jobs.get(slot_id)
-            return bool(job and job.get("status") in ("queued", "encoding", "uploading", "processing"))
+            return bool(job and job.get("status") in ("queued", "encoding", "uploading", "processing", "pausing", "stopping"))
 
     def _verify_last_uploaded_track(self, slot: Dict[str, Any], tracks: List[Dict[str, Any]]) -> bool:
         """
@@ -197,18 +162,15 @@ class OfflineTranscodeManager:
                 if slot.get("kind") in ("profile_cache", "ephemeral_offline"):
                     continue
                 tracks = slot.get("tracks") or []
-                is_building = str(slot.get("offline_status") or "").lower() == "building"
+                off_status = str(slot.get("offline_status") or "").lower()
+                if off_status in ("failed", "paused", "stopped"):
+                    continue
+                is_building = off_status == "building"
                 has_unencoded = bool(tracks) and any(not str(t.get("yoto_sha256") or "").strip() for t in tracks)
                 if not is_building and not has_unencoded:
                     continue
                 self._verify_last_uploaded_track(slot, tracks)
-                # Extract base_url from existing track stream_url if available
-                base_url = ""
-                for t in tracks:
-                    s_url = str(t.get("stream_url") or "")
-                    if "/s/audio/" in s_url and s_url.startswith("http"):
-                        base_url = s_url.split("/s/audio/", 1)[0]
-                        break
+                base_url = _extract_slot_base_url(slot)
                 submode = str(slot.get("offline_mode") or "book")
                 hours = float(slot.get("offline_hours") or 5.0)
                 done_cnt = sum(1 for t in tracks if str(t.get("yoto_sha256") or "").strip())
@@ -231,12 +193,26 @@ class OfflineTranscodeManager:
         base_url: str = "",
         offline_mode: Optional[str] = None,
         hours: float = 5.0,
+        anchor_current_book: bool = False,
+        replace_existing: bool = False,
     ) -> Dict[str, Any]:
-        """Queues a card slot for offline transcoding and Yoto upload."""
+        """Queues a card slot for offline transcoding and Yoto upload, optionally superseding any active job."""
         with self._lock:
             existing = self._jobs.get(slot_id)
-            if existing and existing.get("status") in ("queued", "encoding", "uploading", "processing"):
+            if not replace_existing and existing and existing.get("status") in ("queued", "encoding", "uploading", "processing"):
                 return dict(existing)
+
+            if slot_id in self._cancel_flags:
+                self._cancel_flags[slot_id].set()
+            if slot_id in self._pause_flags:
+                self._pause_flags[slot_id].clear()
+
+            gen = self._job_gen.get(slot_id, 0) + 1
+            self._job_gen[slot_id] = gen
+            pause_ev = threading.Event()
+            cancel_ev = threading.Event()
+            self._pause_flags[slot_id] = pause_ev
+            self._cancel_flags[slot_id] = cancel_ev
 
             job = {
                 "slot_id": slot_id,
@@ -254,11 +230,22 @@ class OfflineTranscodeManager:
 
         thread = threading.Thread(
             target=self._run_job_guarded,
-            args=(slot_id, base_url, offline_mode, float(hours or 5.0)),
+            args=(slot_id, base_url, offline_mode, float(hours or 5.0), anchor_current_book, gen, pause_ev, cancel_ev),
             daemon=True,
         )
         thread.start()
         return job
+
+    def cancel_job(self, slot_id: str) -> Dict[str, Any]:
+        """Cancels and clears any active, paused, stopped, or failed offline transfer for a slot."""
+        with self._lock:
+            self._job_gen[slot_id] = self._job_gen.get(slot_id, 0) + 1
+            if slot_id in self._pause_flags:
+                self._pause_flags[slot_id].clear()
+            self._cancel_flags.setdefault(slot_id, threading.Event()).set()
+            self._jobs.pop(slot_id, None)
+        self._persist_job_status(slot_id, "none")
+        return {"slot_id": slot_id, "status": "cancelled"}
 
     def _run_job_guarded(
         self,
@@ -266,322 +253,121 @@ class OfflineTranscodeManager:
         base_url: str,
         offline_mode: Optional[str],
         hours: float,
+        anchor_current_book: bool = False,
+        job_gen: Optional[int] = None,
+        pause_ev: Optional[threading.Event] = None,
+        cancel_ev: Optional[threading.Event] = None,
     ):
         with self._queue_sem:
-            self._run_job(slot_id, base_url, offline_mode=offline_mode, hours=hours)
-
-    def _resolve_slot_abs_token(self, slot: Dict[str, Any]) -> Optional[str]:
-        owner_user_id = str(slot.get("owner_user_id") or "").strip()
-        if owner_user_id:
-            tok = database.get_user_abs_credentials(owner_user_id).get("abs_api_key", "")
-            if tok:
-                return tok
-        owner_prof = str(slot.get("owner_profile_id") or "").strip()
-        if clients.abs_client:
-            return clients.abs_client.resolve_token_for_profile(owner_prof or None)
-        return None
-
-    def _is_slot_playing(self, slot: Dict[str, Any]) -> bool:
-        """Returns True if the card is currently streaming or playing on a Yoto player (do not overwrite playlist mid-play)."""
-        try:
-            from .playback import get_playback_manager
-            pm = get_playback_manager()
-            for s in pm.get_active_sessions_summary():
-                if s.get("slot_id") == slot.get("slot_id") and int(s.get("open_streams") or 0) > 0:
-                    return True
-        except Exception:
-            pass
-        yoto_cid = str(slot.get("yoto_card_id") or "").strip()
-        if yoto_cid:
-            try:
-                for ev in get_mqtt_bridge().get_device_states().values():
-                    if (
-                        ev.get("cardId") == yoto_cid
-                        and str(ev.get("playbackStatus") or "").lower() == "playing"
-                        and (time.time() - float(ev.get("at") or 0)) < 600
-                    ):
-                        return True
-            except Exception:
-                pass
-        return False
-
-    def _plan_offline_tracks(
-        self,
-        slot: Dict[str, Any],
-        submode: str,
-        hours: float,
-        speed: float,
-        abs_token: Optional[str],
-        base_url: str,
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Plans the tracks for an offline copy in 'next' (5-hour rolling window), 'book' (whole book),
-        or 'series' (whole series) mode, returning `(planned_tracks, offline_meta_dict)`.
-        """
-        mgr = get_bridge_manager()
-        abs_item_id = str(slot.get("abs_item_id") or "").strip()
-        if not abs_item_id or not clients.abs_client:
-            return slot.get("tracks") or [], {}
-
-        all_series_books, active_idx, following_books = resolve_slot_series_chain(slot, abs_token=abs_token)
-        abs_item_id = str(slot.get("abs_item_id") or abs_item_id).strip()
-
-        item_data = clients.abs_client.get_item(abs_item_id, token=abs_token) or {}
-        media = item_data.get("media") or {}
-        meta = media.get("metadata") or {}
-        book_title = str(slot.get("title") or meta.get("title") or "Audiobook")
-        duration = float(media.get("duration") or slot.get("total_duration") or 0.0)
-        chapters = media.get("chapters") or []
-
-        prog = get_effective_item_progress(slot, abs_item_id, abs_token=abs_token)
-        pos = 0.0 if prog.get("isFinished") else float(prog.get("currentTime") or 0.0)
-        if duration > 0 and pos >= duration - 10.0:
-            pos = 0.0
-        resume_start = max(0.0, pos - DEFAULT_REWIND_SECONDS) if pos > DEFAULT_REWIND_SECONDS else 0.0
-
-        planned_segments: List[Dict[str, Any]] = []
-        books_left_off = 0
-
-        if submode == "next":
-            # 5-Hour Rotational Window:
-            # 1. If the total remaining media content (current book + any following series books) fits within the 5-hour window,
-            #    start at 0.0 so the entire book is loaded normally onto the card.
-            # 2. Otherwise (> 5h), look back 1.5 hours prior to `resume_start`, snap back to the beginning of the chapter/track
-            #    containing that timestamp (so the child/parent can rewind after a bedtime sleep timer), and fill the 5-hour
-            #    window forward from that chapter boundary (leaving ~3+ hours of forward audio before the window needs refreshing).
-            window_budget_sec = max(0.5, min(float(hours or 5.0), 5.0)) * 3600.0 * speed
-            max_len = DEFAULT_OFFLINE_TRACK_SECONDS * speed
-            total_chain_dur = duration + sum(float(fb.duration or 0.0) for fb in following_books)
-
-            if duration > 0 and total_chain_dur <= window_budget_sec:
-                window_start_sec = 0.0
-            else:
-                lookback_target = max(0.0, resume_start - (DEFAULT_LOOKBACK_HOURS * 3600.0 * speed))
-                window_start_sec = 0.0
-                if lookback_target > 0.0:
-                    snap_fn = mgr.quiet_spots.snapper(abs_item_id)
-                    spans = chapter_spans(chapters, duration, DEFAULT_PART_SECONDS, snap=snap_fn) if duration > 0 else []
-                    for sp_start, sp_end, _ in spans:
-                        if sp_start <= lookback_target < sp_end:
-                            window_start_sec = sp_start
-                            break
-                    else:
-                        window_start_sec = lookback_target
-
-            left_sec = window_budget_sec
-            chain = [(abs_item_id, book_title, duration, chapters, window_start_sec)]
-            for fb in following_books:
-                chain.append((fb.item_id, fb.title, fb.duration, None, 0.0))
-
-            for b_id, b_title, b_dur, b_ch, b_start in chain:
-                if left_sec < 30.0 or len(planned_segments) >= MAX_OFFLINE_NEXT_TRACKS:
-                    break
-                if b_ch is None or b_dur <= 0:
-                    b_item = clients.abs_client.get_item(b_id, token=abs_token) or {}
-                    b_media = b_item.get("media") or {}
-                    b_ch = b_media.get("chapters") or []
-                    b_dur = float(b_media.get("duration") or b_dur or 0.0)
-                if b_dur <= 0 or b_start >= b_dur:
-                    continue
-                b_end = min(b_dur, b_start + left_sec)
-                snap = mgr.quiet_spots.snapper(b_id)
-                for s, e, ch_title in plan_segments(b_start, b_end, b_ch, max_len=max_len, snap=snap):
-                    label = ch_title or f"{b_title} · {_hms(s)}"
-                    if following_books:
-                        label = f"{b_title}: {ch_title}" if ch_title else f"{b_title} · {_hms(s)}"
-                    planned_segments.append({
-                        "abs_item_id": b_id,
-                        "book_title": b_title,
-                        "book_duration": b_dur,
-                        "start_time": s,
-                        "end_time": e,
-                        "duration": max(0.1, e - s),
-                        "title": label,
-                    })
-                left_sec -= (b_end - b_start)
-            planned_segments = planned_segments[:MAX_OFFLINE_NEXT_TRACKS]
-
-        else:
-            # 'book' or 'series': whole book(s) packed into <= 99 tracks
-            max_len = YOTO_MAX_TRACK * speed
-            earlier = all_series_books[:active_idx] if (submode == "series" and all_series_books) else []
-            later = following_books if submode == "series" else []
-
-            candidate_group: List[Tuple[str, str, float, Optional[List[Dict[str, Any]]]]] = (
-                [(b.item_id, b.title, b.duration, None) for b in earlier]
-                + [(abs_item_id, book_title, duration, chapters)]
-                + [(b.item_id, b.title, b.duration, None) for b in later]
+            self._run_job(
+                slot_id,
+                base_url,
+                offline_mode=offline_mode,
+                hours=hours,
+                anchor_current_book=anchor_current_book,
+                job_gen=job_gen,
+                pause_ev=pause_ev,
+                cancel_ev=cancel_ev,
             )
-            ch_cache: Dict[str, List[Dict[str, Any]]] = {abs_item_id: chapters}
-            dur_cache: Dict[str, float] = {abs_item_id: duration}
 
-            def _take_fitting(group):
-                fit = []
-                fit_chs = []
-                used_tracks = 0
-                for b_id, b_title, b_dur, b_ch in group:
-                    if b_id not in ch_cache or dur_cache.get(b_id, 0.0) <= 0:
-                        b_item = clients.abs_client.get_item(b_id, token=abs_token) or {}
-                        b_media = b_item.get("media") or {}
-                        ch_cache[b_id] = b_media.get("chapters") or []
-                        dur_cache[b_id] = float(b_media.get("duration") or b_dur or 0.0)
-                    c_list = ch_cache[b_id]
-                    d_val = dur_cache[b_id]
-                    if d_val <= 0:
-                        continue
-                    need = min_tracks(c_list, d_val, max_len, DEFAULT_PART_SECONDS, mgr.quiet_spots.snapper(b_id))
-                    if used_tracks + need > WHOLE_TRACKS and fit:
-                        break
-                    fit.append((b_id, b_title, d_val))
-                    fit_chs.append(c_list)
-                    used_tracks += need
-                return fit, fit_chs
+    def pause_job(self, slot_id: str) -> Dict[str, Any]:
+        """Requests an active or queued offline transfer to pause cleanly without blocking the queue."""
+        persist_now = False
+        with self._lock:
+            ev = self._pause_flags.setdefault(slot_id, threading.Event())
+            ev.set()
+            cur = self._jobs.get(slot_id)
+            if cur and cur.get("status") in ("encoding", "uploading", "processing", "pausing"):
+                cur["status"] = "pausing"
+                cur["updated_at"] = time.time()
+                return dict(cur)
+            if cur and cur.get("status") == "queued":
+                cur["status"] = "paused"
+                cur["updated_at"] = time.time()
+                persist_now = True
+                res = dict(cur)
+            else:
+                slot = get_bridge_manager().get_slot(slot_id) or {}
+                tracks = slot.get("tracks") or []
+                done_cnt = sum(1 for t in tracks if str(t.get("yoto_sha256") or "").strip())
+                total_cnt = len(tracks)
+                res = {
+                    "slot_id": slot_id,
+                    "status": "paused",
+                    "offline_mode": slot.get("offline_mode") or "book",
+                    "done": done_cnt,
+                    "total": total_cnt,
+                    "progress": (done_cnt / total_cnt) if total_cnt > 0 else 0.0,
+                    "error": None,
+                    "updated_at": time.time(),
+                }
+                self._jobs[slot_id] = dict(res)
+                persist_now = True
+        if persist_now:
+            self._persist_job_status(slot_id, "paused")
+        return res
 
-            fit_books, fit_chapters = _take_fitting(candidate_group)
-            if earlier and abs_item_id not in [b[0] for b in fit_books]:
-                fit_books, fit_chapters = _take_fitting(candidate_group[len(earlier):])
-            books_left_off = max(0, len(candidate_group) - len(fit_books))
+    def stop_job(self, slot_id: str) -> Dict[str, Any]:
+        """Requests an active or paused offline transfer to stop cleanly while keeping uploaded tracks."""
+        persist_now = False
+        with self._lock:
+            self._pause_flags.setdefault(slot_id, threading.Event()).clear()
+            self._cancel_flags.setdefault(slot_id, threading.Event()).set()
+            cur = self._jobs.get(slot_id)
+            if cur and cur.get("status") in ("encoding", "uploading", "processing", "pausing", "stopping"):
+                cur["status"] = "stopping"
+                cur["updated_at"] = time.time()
+                return dict(cur)
+            if cur and cur.get("status") in ("queued", "paused"):
+                cur["status"] = "stopped"
+                cur["updated_at"] = time.time()
+                persist_now = True
+                res = dict(cur)
+            else:
+                slot = get_bridge_manager().get_slot(slot_id) or {}
+                tracks = slot.get("tracks") or []
+                done_cnt = sum(1 for t in tracks if str(t.get("yoto_sha256") or "").strip())
+                total_cnt = len(tracks)
+                res = {
+                    "slot_id": slot_id,
+                    "status": "stopped",
+                    "offline_mode": slot.get("offline_mode") or "book",
+                    "done": done_cnt,
+                    "total": total_cnt,
+                    "progress": (done_cnt / total_cnt) if total_cnt > 0 else 0.0,
+                    "error": None,
+                    "updated_at": time.time(),
+                }
+                self._jobs[slot_id] = dict(res)
+                persist_now = True
+        if persist_now:
+            self._persist_job_status(slot_id, "stopped")
+        return res
 
-            if fit_books:
-                snaps = [mgr.quiet_spots.snapper(b[0]) for b in fit_books]
-                plans = plan_whole(
-                    [(ch, b[2]) for ch, b in zip(fit_chapters, fit_books)],
-                    max_len=max_len,
-                    limit=WHOLE_TRACKS,
-                    part_seconds=DEFAULT_PART_SECONDS,
-                    snaps=snaps,
-                )
-                multi = len(fit_books) > 1
-                for (b_id, b_title, b_dur), plan in zip(fit_books, plans):
-                    for s, e, ch_title in plan:
-                        label = ch_title or f"{b_title} · {_hms(s)}"
-                        if multi:
-                            label = f"{b_title}: {ch_title}" if ch_title else f"{b_title} · {_hms(s)}"
-                        planned_segments.append({
-                            "abs_item_id": b_id,
-                            "book_title": b_title,
-                            "book_duration": b_dur,
-                            "start_time": s,
-                            "end_time": e,
-                            "duration": max(0.1, e - s),
-                            "title": label,
-                        })
-                planned_segments = planned_segments[:WHOLE_TRACKS]
-
-        if not planned_segments:
-            return slot.get("tracks") or [], {}
-
-        # Persist the planned track layout to bridge_tracks if it differs from current tracks
-        slot_id = slot["slot_id"]
-        server_url = base_url.rstrip("/") if base_url else ""
-        existing_shas = {
-            (str(t.get("abs_item_id") or abs_item_id), round(float(t.get("start_time") or 0), 1), round(float(t.get("end_time") or 0), 1)): t.get("yoto_sha256") or ""
-            for t in (slot.get("tracks") or [])
-            if t.get("yoto_sha256")
-        }
-
-        order_books = list(dict.fromkeys(seg["abs_item_id"] for seg in planned_segments))
-        first_seg = planned_segments[0]
-        last_seg = planned_segments[-1]
-        offline_meta: Dict[str, Any] = {
-            "status": "building",
-            "mode": submode,
-            "hours": float(hours or 5.0),
-            "speed": speed,
-            "books": order_books,
-            "cur_item": first_seg["abs_item_id"],
-            "start": first_seg["start_time"],
-            "end": last_seg["end_time"],
-            "books_left_off": books_left_off,
-            "last_pos": first_seg["start_time"],
-            "last_write_wall": time.time(),
-            "tracks": [],
-        }
-        if first_seg["abs_item_id"] != abs_item_id or resume_start > first_seg["start_time"] + 1.0:
-            offline_meta["resume"] = {"item_id": abs_item_id, "pos": resume_start}
-
-        db_tracks: List[Dict[str, Any]] = []
-        conn = database.get_db_connection()
-        try:
-            with conn:
-                cur = conn.cursor()
-                cur.execute("DELETE FROM bridge_tracks WHERE slot_id = ?;", (slot_id,))
-                for idx, seg in enumerate(planned_segments, 1):
-                    stream_url = f"{server_url}/s/audio/{slot_id}/{idx}" if server_url else f"/s/audio/{slot_id}/{idx}"
-                    sha_key = (seg["abs_item_id"], round(seg["start_time"], 1), round(seg["end_time"], 1))
-                    warm_sha = existing_shas.get(sha_key, "")
-                    cur.execute(
-                        """
-                        INSERT INTO bridge_tracks (
-                            slot_id, track_idx, abs_item_id, book_title, book_duration,
-                            title, start_time, end_time, duration, yoto_sha256, stream_url
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                        """,
-                        (
-                            slot_id,
-                            idx,
-                            seg["abs_item_id"],
-                            seg["book_title"],
-                            seg["book_duration"],
-                            seg["title"],
-                            seg["start_time"],
-                            seg["end_time"],
-                            seg["duration"],
-                            warm_sha,
-                            stream_url,
-                        ),
-                    )
-                    db_tracks.append({
-                        "track_idx": idx,
-                        "abs_item_id": seg["abs_item_id"],
-                        "book_title": seg["book_title"],
-                        "book_duration": seg["book_duration"],
-                        "title": seg["title"],
-                        "start_time": seg["start_time"],
-                        "end_time": seg["end_time"],
-                        "duration": seg["duration"],
-                        "yoto_sha256": warm_sha,
-                        "stream_url": stream_url,
-                    })
-                    offline_meta["tracks"].append({
-                        "key": f"{idx:02d}",
-                        "track_idx": idx,
-                        "item_id": seg["abs_item_id"],
-                        "book": seg["book_title"],
-                        "book_duration": seg["book_duration"],
-                        "start": seg["start_time"],
-                        "end": seg["end_time"],
-                        "on_card": bool(warm_sha),
-                    })
-                cur.execute(
-                    """
-                    UPDATE bridge_slots
-                    SET offline_mode = ?, offline_hours = ?, offline_meta = ?, offline_status = 'building', updated_at = CURRENT_TIMESTAMP
-                    WHERE slot_id = ?;
-                    """,
-                    (submode, float(hours or 5.0), json.dumps(offline_meta), slot_id),
-                )
-        finally:
-            conn.close()
-
-        return db_tracks, offline_meta
-
-    def _build_sources_for_book(
-        self,
-        item_id: str,
-        abs_token: Optional[str],
-        cache: Dict[str, Tuple[List[AudioTrackSource], str]],
-    ) -> Tuple[List[AudioTrackSource], str]:
-        if item_id in cache:
-            return cache[item_id]
-        if not clients.abs_client:
-            return [], ""
-        item_data = clients.abs_client.get_item(item_id, token=abs_token) or {}
-        sources, auth_hdr = get_bridge_manager()._build_abs_audio_sources(
-            item_id, item_data, abs_token_override=abs_token
+    def resume_job(self, slot_id: str, base_url: str = "") -> Dict[str, Any]:
+        """Resumes a paused, stopped, or failed offline transfer from the last verified track."""
+        mgr = get_bridge_manager()
+        slot = mgr.get_slot(slot_id)
+        if not slot:
+            raise ValueError("Slot not found")
+        self._verify_last_uploaded_track(slot, slot.get("tracks") or [])
+        with database.get_db_connection() as conn:
+            conn.execute(
+                "UPDATE bridge_slots SET offline_status = 'building', updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
+                (slot_id,),
+            )
+            conn.commit()
+        submode = str(slot.get("offline_mode") or "book")
+        hours = float(slot.get("offline_hours") or 5.0)
+        eff_base = base_url or _extract_slot_base_url(slot)
+        return self.queue_transcode(
+            slot_id,
+            base_url=eff_base,
+            offline_mode=submode,
+            hours=hours,
+            anchor_current_book=(submode == "series"),
+            replace_existing=True,
         )
-        cache[item_id] = (sources, auth_hdr)
-        return sources, auth_hdr
 
     def _run_job(
         self,
@@ -589,7 +375,44 @@ class OfflineTranscodeManager:
         base_url: str,
         offline_mode: Optional[str] = None,
         hours: float = 5.0,
+        anchor_current_book: bool = False,
+        job_gen: Optional[int] = None,
+        pause_ev: Optional[threading.Event] = None,
+        cancel_ev: Optional[threading.Event] = None,
     ):
+        if pause_ev is None:
+            pause_ev = self._pause_flags.setdefault(slot_id, threading.Event())
+        if cancel_ev is None:
+            cancel_ev = self._cancel_flags.setdefault(slot_id, threading.Event())
+
+        offline_meta: Dict[str, Any] = {}
+
+        def _is_current_gen() -> bool:
+            return job_gen is None or self._job_gen.get(slot_id) == job_gen
+
+        def _check_interrupted(save_live_cb=None) -> Optional[str]:
+            is_cur = _is_current_gen()
+            if cancel_ev.is_set() or not is_cur:
+                if save_live_cb and is_cur:
+                    save_live_cb(force=True)
+                if is_cur:
+                    self._persist_job_status(slot_id, "stopped", offline_meta=offline_meta)
+                    self._update_job(slot_id, status="stopped")
+                logger.info("Offline [%s]: transfer stopped cleanly", slot_id)
+                return "stopped"
+            if pause_ev.is_set():
+                if save_live_cb:
+                    save_live_cb(force=True)
+                if is_cur:
+                    self._persist_job_status(slot_id, "paused", offline_meta=offline_meta)
+                    self._update_job(slot_id, status="paused")
+                logger.info("Offline [%s]: transfer paused cleanly", slot_id)
+                return "paused"
+            return None
+
+        if _check_interrupted():
+            return
+
         mgr = get_bridge_manager()
         slot = mgr.get_slot(slot_id)
         if not slot:
@@ -598,7 +421,9 @@ class OfflineTranscodeManager:
 
         abs_item_id = slot.get("abs_item_id")
         if not abs_item_id or not clients.abs_client:
-            self._update_job(slot_id, status="failed", error="No ABS client or item configured")
+            err = "No ABS client or item configured"
+            self._persist_job_failure(slot_id, err)
+            self._update_job(slot_id, status="failed", error=err)
             return
 
         abs_token = self._resolve_slot_abs_token(slot)
@@ -614,14 +439,27 @@ class OfflineTranscodeManager:
                 speed=speed,
                 abs_token=abs_token,
                 base_url=base_url,
+                anchor_current_book=anchor_current_book,
             )
         except Exception as e:
             logger.warning("Offline track planning fallback for %s: %s", slot_id, e)
             tracks = slot.get("tracks") or []
             offline_meta = {}
 
+        if _check_interrupted():
+            return
+
         if not tracks:
-            self._update_job(slot_id, status="failed", error="Slot has no tracks")
+            err = "Slot has no tracks"
+            self._persist_job_failure(slot_id, err, offline_meta)
+            self._update_job(slot_id, status="failed", error=err)
+            return
+
+        if not shutil.which("ffmpeg"):
+            err = "ffmpeg binary not found in PATH — install ffmpeg to encode offline audio."
+            logger.error("Error during offline transcode/upload for slot %s: %s", slot_id, err)
+            self._persist_job_failure(slot_id, err, offline_meta)
+            self._update_job(slot_id, status="failed", error=err, total=len(tracks))
             return
 
         total_tracks = len(tracks)
@@ -639,7 +477,9 @@ class OfflineTranscodeManager:
         first_book_id = str(tracks[0].get("abs_item_id") or abs_item_id)
         first_sources, _ = self._build_sources_for_book(first_book_id, abs_token, sources_cache)
         if not first_sources:
-            self._update_job(slot_id, status="failed", error="ABS item has no audio files")
+            err = "ABS item has no audio files"
+            self._persist_job_failure(slot_id, err, offline_meta)
+            self._update_job(slot_id, status="failed", error=err, total=total_tracks)
             return
 
         server_url = base_url.rstrip("/") if base_url else ""
@@ -653,6 +493,8 @@ class OfflineTranscodeManager:
 
         def _save_live_batch(force: bool = False):
             nonlocal yoto_card_id
+            if not _is_current_gen() or cancel_ev.is_set():
+                return
             if not clients.yoto_client or not hasattr(clients.yoto_client, "save_mixed_playlist"):
                 return
             done_count = sum(1 for x in uploaded_infos if x is not None)
@@ -710,16 +552,41 @@ class OfflineTranscodeManager:
                 live_state["ok"] = False
                 logger.debug("save_mixed_playlist batch notice for %s: %s", slot_id, e)
 
+        book_chapters_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+        def _get_book_chapters(book_id: str) -> List[Dict[str, Any]]:
+            if book_id not in book_chapters_cache:
+                chapters_list: List[Dict[str, Any]] = []
+                if clients.abs_client and book_id:
+                    try:
+                        b_item = clients.abs_client.get_item(book_id, token=abs_token)
+                        if isinstance(b_item, dict):
+                            media_obj = b_item.get("media")
+                            if isinstance(media_obj, dict):
+                                chapters_list = media_obj.get("chapters") or []
+                    except Exception as e:
+                        logger.debug("Offline [%s]: chapters lookup failed for %s: %s", slot_id, book_id, e)
+                book_chapters_cache[book_id] = chapters_list
+            return book_chapters_cache[book_id]
+
         conn = database.get_db_connection()
         try:
             for idx, trk in enumerate(tracks):
+                if _check_interrupted(_save_live_batch):
+                    return
                 track_idx = int(trk["track_idx"])
                 t_book_id = str(trk.get("abs_item_id") or abs_item_id)
                 start_sec = float(trk["start_time"])
                 end_sec = float(trk["end_time"])
                 trk_title = trk.get("title") or f"Track {track_idx}"
                 sha = trk.get("yoto_sha256")
-                icon_ref = get_or_upload_yoto_icon(t_book_id, track_idx=track_idx, token=abs_token)
+                src_ch_idx = resolve_source_chapter_idx(_get_book_chapters(t_book_id), start_sec, end_sec)
+                icon_ref = get_or_upload_yoto_icon(
+                    t_book_id,
+                    track_idx=track_idx,
+                    token=abs_token,
+                    chapter_idx=src_ch_idx,
+                )
                 icon_stream_url = f"{server_url}/s/icon/{slot_id}/{track_idx}.png" if server_url else ""
 
                 if sha:
@@ -758,6 +625,12 @@ class OfflineTranscodeManager:
                 audio_buffer = bytearray()
                 for chunk in streamer.stream_segment(b_sources, start_sec, end_sec, auth_header=b_auth, speed=speed):
                     audio_buffer.extend(chunk)
+                    if cancel_ev.is_set() or pause_ev.is_set():
+                        if _check_interrupted(_save_live_batch):
+                            return
+
+                if _check_interrupted(_save_live_batch):
+                    return
 
                 expected_track_sec = max(0.1, (end_sec - start_sec) / speed)
                 expected_bytes = streamer.seconds_to_bytes(expected_track_sec, 1.0)
@@ -819,6 +692,9 @@ class OfflineTranscodeManager:
                 if (idx + 1) < total_tracks:
                     _save_live_batch(force=False)
 
+            if _check_interrupted(_save_live_batch) or not _is_current_gen():
+                return
+
             uploaded_tracks = [x for x in uploaded_infos if x is not None]
             mode_desc = (
                 f"next {eff_hours:g}h window"
@@ -836,6 +712,11 @@ class OfflineTranscodeManager:
                 cover_url=cover_url,
                 description=f"Offline audiobook ({mode_desc}): {slot.get('title', '')} by {slot.get('author', '')}",
             )
+            if not saved_cid:
+                raise RuntimeError("Failed to save final offline playlist to Yoto Cloud")
+
+            if not _is_current_gen():
+                return
 
             if offline_meta:
                 offline_meta["status"] = "ready"
@@ -866,9 +747,46 @@ class OfflineTranscodeManager:
 
         except Exception as e:
             logger.error("Error during offline transcode/upload for slot %s: %s", slot_id, e)
-            self._update_job(slot_id, status="failed", error=str(e))
+            if _is_current_gen():
+                self._persist_job_failure(slot_id, str(e), offline_meta)
+                self._update_job(slot_id, status="failed", error=str(e))
         finally:
             conn.close()
+
+    def _persist_job_status(self, slot_id: str, status: str, error_msg: str = "", offline_meta: Optional[Dict[str, Any]] = None):
+        """Persists offline build state ('failed', 'paused', 'stopped', etc.) in SQLite so status survives restarts."""
+        conn = database.get_db_connection()
+        try:
+            meta: Dict[str, Any] = dict(offline_meta) if isinstance(offline_meta, dict) else {}
+            if not meta:
+                row = conn.execute("SELECT offline_meta FROM bridge_slots WHERE slot_id = ?;", (slot_id,)).fetchone()
+                if row and row[0]:
+                    try:
+                        parsed = json.loads(row[0])
+                        if isinstance(parsed, dict):
+                            meta = parsed
+                    except Exception:
+                        meta = {}
+            meta["status"] = status
+            if status == "failed":
+                meta["error"] = str(error_msg or "Offline build failed")
+                meta["failed_at"] = time.time()
+            else:
+                meta.pop("error", None)
+                meta["updated_at"] = time.time()
+            with conn:
+                conn.execute(
+                    "UPDATE bridge_slots SET offline_status = ?, offline_meta = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
+                    (status, json.dumps(meta), slot_id),
+                )
+        except Exception as db_err:
+            logger.debug("_persist_job_status notice for %s: %s", slot_id, db_err)
+        finally:
+            conn.close()
+
+    def _persist_job_failure(self, slot_id: str, error_msg: str, offline_meta: Optional[Dict[str, Any]] = None):
+        """Persists offline build failure state & message in SQLite so errors survive restarts and display in the Cards UI."""
+        self._persist_job_status(slot_id, "failed", error_msg=error_msg, offline_meta=offline_meta)
 
     def _update_job(self, slot_id: str, **kwargs):
         with self._lock:
@@ -877,151 +795,6 @@ class OfflineTranscodeManager:
                 self._jobs[slot_id]["updated_at"] = time.time()
 
     # ==========================================================================
-    # Offline Copy MQTT Position Sync -> Audiobookshelf & Whole-Copy Auto-Jump
-    # ==========================================================================
-
-    def on_mqtt_event(self, device_id: str, ev: Dict[str, Any]):
-        """
-        Syncs playback progress from a Yoto Player playing an offline ('yoto:#sha256') card
-        back to Audiobookshelf (or local own_place progress), and auto-jumps whole-book copies
-        to the listener's saved ABS position on first play.
-        """
-        card_id = str(ev.get("cardId") or "").strip()
-        if not card_id or card_id.lower() in ("none", "null") or ev.get("position") is None:
-            return
-
-        mgr = get_bridge_manager()
-        slot = None
-        for s in (mgr.list_slots() or []):
-            if str(s.get("yoto_card_id") or "").strip() == card_id and s.get("mode") == "offline":
-                slot = s
-                break
-        if not slot:
-            return
-        if not slot.get("abs_item_id"):
-            first_trk_item = next((str(t.get("abs_item_id") or "").strip() for t in (slot.get("tracks") or []) if str(t.get("abs_item_id") or "").strip()), "")
-            if not first_trk_item:
-                return
-            slot["abs_item_id"] = first_trk_item
-
-        raw_meta = slot.get("offline_meta")
-        meta: Dict[str, Any] = {}
-        if isinstance(raw_meta, str) and raw_meta:
-            try:
-                meta = json.loads(raw_meta)
-            except Exception:
-                meta = {}
-        elif isinstance(raw_meta, dict):
-            meta = dict(raw_meta)
-
-        raw_key = str(ev.get("chapterKey") or ev.get("trackKey") or "").strip()
-        track_idx = 1
-        if raw_key.isdigit():
-            track_idx = int(raw_key)
-
-        tracks = slot.get("tracks") or []
-        trk = next((t for t in tracks if int(t.get("track_idx") or 0) == track_idx), None)
-        if not trk:
-            return
-        # If the track is still streaming (not yet uploaded to the card), live PlaybackManager handles it
-        if not trk.get("yoto_sha256"):
-            return
-
-        speed = max(0.5, float(meta.get("speed") or slot.get("speed") or 1.0))
-        t_start = float(trk.get("start_time") or 0.0)
-        t_end = float(trk.get("end_time") or t_start)
-        t_item_id = str(trk.get("abs_item_id") or slot.get("abs_item_id") or "")
-        t_book_dur = float(trk.get("book_duration") or slot.get("total_duration") or t_end)
-        pos = t_start + min(max(0.0, float(ev["position"])) * speed, max(0.0, t_end - t_start))
-        status = str(ev.get("playbackStatus") or "").lower()
-
-        # Check initial resume jump on first play:
-        # When a whole-book copy or a 5-hour rolling window with 1.5h lookback starts playing at Track 1
-        # (earlier than the saved ABS resume position), auto-jump the player once while online to the saved
-        # resume track/offset. Once the initial jump has been sent (or if the user twists the left knob back
-        # into the 1.5h lookback tracks to rewind after bedtime), mark `passed_resume = True` so rewinding works freely!
-        resume_info = meta.get("resume")
-        if resume_info and not meta.get("passed_resume"):
-            r_item = str(resume_info.get("item_id") or slot["abs_item_id"])
-            r_pos = float(resume_info.get("pos") or 0.0)
-            order = meta.get("books") or [r_item]
-            cur_ord = order.index(t_item_id) if t_item_id in order else 0
-            res_ord = order.index(r_item) if r_item in order else 0
-            if (cur_ord, pos) < (res_ord, r_pos - 1.0):
-                if track_idx == 1 and float(ev.get("position") or 0.0) < 15.0 and not meta.get("jump_sent"):
-                    if status == "playing":
-                        target_trk = next(
-                            (
-                                t for t in tracks
-                                if str(t.get("abs_item_id") or slot["abs_item_id"]) == r_item
-                                and float(t.get("start_time") or 0) <= r_pos < float(t.get("end_time") or 0)
-                            ),
-                            None,
-                        )
-                        mqtt = get_mqtt_bridge()
-                        if target_trk and mqtt.is_connected:
-                            meta["jump_sent"] = True
-                            meta["passed_resume"] = True
-                            self._save_slot_offline_meta(slot["slot_id"], meta)
-                            target_sec = int(max(0.0, (r_pos - float(target_trk["start_time"])) / speed))
-                            mqtt.play(device_id, card_id, seconds_in=target_sec, track=int(target_trk["track_idx"]))
-                    return
-                # User intentionally chose or rewound to an earlier lookback track -> allow playback and sync!
-                meta["passed_resume"] = True
-            else:
-                meta["passed_resume"] = True
-
-        last_attempt = float(meta.get("last_write_attempt") or 0.0)
-        due = (time.time() - last_attempt) >= OFFLINE_SYNC_INTERVAL
-        if status not in ("paused", "stopped") and not due:
-            return
-
-        meta["last_write_attempt"] = time.time()
-        meta["last_pos"] = pos
-        meta["device_id"] = device_id
-        abs_token = self._resolve_slot_abs_token(slot)
-
-        # If listener crossed into a later book on a multi-book offline card, mark earlier book(s) finished
-        order = meta.get("books") or [t_item_id]
-        cur_item = str(meta.get("cur_item") or order[0])
-        if t_item_id != cur_item and t_item_id in order and cur_item in order and order.index(t_item_id) > order.index(cur_item):
-            for done_id in order[order.index(cur_item):order.index(t_item_id)]:
-                done_dur = next(
-                    (float(t.get("book_duration") or 0) for t in tracks if str(t.get("abs_item_id") or "") == done_id),
-                    0.0,
-                )
-                patch_effective_item_progress(slot, done_id, done_dur, done_dur, is_finished=True, abs_token=abs_token)
-            meta["cur_item"] = t_item_id
-
-        # Anti-backwards guard: never overwrite if phone moved further since our last write
-        prog = get_effective_item_progress(slot, t_item_id, abs_token=abs_token)
-        abs_pos = float(prog.get("currentTime") or 0.0)
-        newer = (float(prog.get("lastUpdate") or 0.0) / 1000.0) > (float(meta.get("last_write_wall") or 0.0) + 2.0)
-        if newer and abs_pos > pos + 2.0:
-            self._save_slot_offline_meta(slot["slot_id"], meta)
-            return
-
-        if abs(abs_pos - pos) >= 1.0:
-            is_fin = bool(t_book_dur > 0 and pos >= t_book_dur - min(30.0, 0.02 * t_book_dur))
-            patch_effective_item_progress(slot, t_item_id, pos, t_book_dur, is_finished=is_fin, abs_token=abs_token)
-            meta["last_written"] = pos
-            meta["last_write_wall"] = time.time()
-
-        self._save_slot_offline_meta(slot["slot_id"], meta)
-
-    def _save_slot_offline_meta(self, slot_id: str, meta: Dict[str, Any]):
-        conn = database.get_db_connection()
-        try:
-            with conn:
-                conn.execute(
-                    "UPDATE bridge_slots SET offline_meta = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
-                    (json.dumps(meta), slot_id),
-                )
-        except Exception as e:
-            logger.debug("_save_slot_offline_meta notice for %s: %s", slot_id, e)
-        finally:
-            conn.close()
-
 
 _offline_manager: Optional[OfflineTranscodeManager] = None
 
@@ -1033,124 +806,7 @@ def get_offline_manager() -> OfflineTranscodeManager:
     return _offline_manager
 
 
-def prune_evicted_profile_playlists() -> Dict[str, Any]:
-    """
-    Automated LRU Cache Pruner for ephemeral profile playlists.
-    Follows profile offline_retention_limit and atomic whole-series recent_tier curation rules.
-    Strictly preserves:
-    - Pinned playlists (is_pinned = 1 or is_protected = 1)
-    - Permanent MYO / fleet cards (kind = 'permanent_myo')
-    - Active primary profile cards (kind = 'profile_primary')
-    - Custom user-uploaded playlists
-    - Sister books belonging to any series present in the profile's retained recent tier
-    """
-    pruned_count = 0
-    pruned_items = []
+def refresh_offline_series_slots() -> int:
+    """Module-level entrypoint for rolling finished books off offline series cards."""
+    return get_offline_manager().refresh_offline_series_slots()
 
-    profiles = database.get_all_profiles()
-
-    book_to_series: Dict[str, set[str]] = {}
-    series_to_books: Dict[str, set[str]] = {}
-    try:
-        for it in database.get_catalog_matrix().get("items", []):
-            mid = it.get("id")
-            if not mid:
-                continue
-            s_names = set()
-            if (it.get("series") or "").strip():
-                s_names.add(it["series"].strip().lower())
-            for sl in (it.get("series_list") or []):
-                sn = (sl.get("name") or "").strip().lower()
-                if sn:
-                    s_names.add(sn)
-            if s_names:
-                book_to_series[mid] = s_names
-                for sn in s_names:
-                    series_to_books.setdefault(sn, set()).add(mid)
-    except Exception as e:
-        logger.debug("Catalog series lookup notice in pruner: %s", e)
-
-    protected_yoto_card_ids: set[str] = {
-        str(p_cfg.get("primary_card_id") or "").strip()
-        for p_cfg in profiles.values()
-        if str(p_cfg.get("primary_card_id") or "").strip()
-    }
-
-    conn = database.get_db_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT slot_id, abs_item_id, series_name, kind, is_pinned, is_protected, yoto_card_id FROM bridge_slots;")
-        for r in cur.fetchall():
-            r_cid = str(r["yoto_card_id"] or "").strip()
-            if r_cid and (r["kind"] not in ("profile_cache", "ephemeral_offline") or r["is_pinned"] or r["is_protected"]):
-                protected_yoto_card_ids.add(r_cid)
-            r_mid = r["abs_item_id"]
-            r_ser = (r["series_name"] or "").strip().lower()
-            if r_mid and r_ser:
-                book_to_series.setdefault(r_mid, set()).add(r_ser)
-                series_to_books.setdefault(r_ser, set()).add(r_mid)
-
-        for p_id, p_cfg in profiles.items():
-            retention_limit = int(p_cfg.get("offline_retention_limit", 8) or 8)
-            playback_history = database.get_playback_history(p_id)
-
-            sorted_recent = sorted(playback_history.items(), key=lambda kv: kv[1], reverse=True)
-            base_recent_ids = {book_id for book_id, _ in sorted_recent[:retention_limit]}
-
-            cur.execute("""
-                SELECT abs_item_id FROM bridge_slots
-                WHERE owner_profile_id = ? AND kind = 'profile_primary';
-            """, (p_id,))
-            for prow in cur.fetchall():
-                if prow["abs_item_id"]:
-                    base_recent_ids.add(prow["abs_item_id"])
-
-            retained_series: set[str] = set()
-            for bid in base_recent_ids:
-                retained_series.update(book_to_series.get(bid, set()))
-            retained_ids = set(base_recent_ids)
-            for sn in retained_series:
-                retained_ids.update(series_to_books.get(sn, set()))
-
-            cur.execute("""
-                SELECT slot_id, abs_item_id, title, series_name, is_pinned, is_protected, kind, yoto_card_id
-                FROM bridge_slots
-                WHERE owner_profile_id = ? AND kind IN ('profile_cache', 'ephemeral_offline');
-            """, (p_id,))
-            candidate_slots = cur.fetchall()
-
-            for s in candidate_slots:
-                slot_id = s["slot_id"]
-                book_id = s["abs_item_id"]
-                yoto_cid = s["yoto_card_id"] or slot_id
-                s_series = (s["series_name"] or "").strip().lower()
-
-                if s["is_pinned"] or s["is_protected"]:
-                    continue
-
-                if book_id in retained_ids or (s_series and s_series in retained_series):
-                    continue
-
-                logger.info("Pruning evicted offline playlist: %s (slot: %s, profile: %s)", s["title"], slot_id, p_id)
-                if clients.yoto_client and yoto_cid not in protected_yoto_card_ids:
-                    try:
-                        clients.yoto_client.delete_playlist(yoto_cid)
-                    except Exception as e:
-                        logger.warning("Failed to delete Yoto Cloud playlist %s: %s", yoto_cid, e)
-
-                with conn:
-                    sub_cur = conn.cursor()
-                    sub_cur.execute("DELETE FROM bridge_slots WHERE slot_id = ?;", (slot_id,))
-                    sub_cur.execute("DELETE FROM bridge_tracks WHERE slot_id = ?;", (slot_id,))
-
-                pruned_count += 1
-                pruned_items.append({"slot_id": slot_id, "title": s["title"], "profile_id": p_id})
-
-    finally:
-        conn.close()
-
-    return {
-        "pruned_count": pruned_count,
-        "pruned_items": pruned_items,
-        "timestamp": time.time()
-    }

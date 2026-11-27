@@ -221,8 +221,9 @@ async function initPortal() {
     if (yotoTokenValid && !(window.StoryDeckHealth && window.StoryDeckHealth.isOffline())) {
       pollPlayerStatus();
       const cardsTab = document.getElementById("tabCards");
+      const activeTranscodeStatuses = new Set(["queued", "encoding", "uploading", "processing", "pausing", "stopping"]);
       const hasActiveTranscode = (cardSlots || []).some(
-        s => s.transcode && s.transcode.status && s.transcode.status !== "ready" && s.transcode.status !== "failed"
+        s => s.transcode && activeTranscodeStatuses.has(s.transcode.status)
       );
       if ((cardsTab && cardsTab.classList.contains("active")) || hasActiveTranscode) {
         if (typeof refreshCardsTranscodeProgress === "function") {
@@ -403,25 +404,4 @@ function switchActiveProfile(profileId) {
   }
   loadLibrary();
   loadContinueListening();
-}
-
-// -----------------------------------------------------------------------------
-// Utilities
-// -----------------------------------------------------------------------------
-
-function formatSeconds(secs) {
-  const s = Math.floor(secs || 0);
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return `${m}:${rem < 10 ? '0' : ''}${rem}`;
-}
-
-function escapeHtml(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }

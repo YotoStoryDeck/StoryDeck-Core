@@ -11,19 +11,16 @@
   <meta name="apple-mobile-web-app-title" content="StoryDeck">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#E5352B">
-  <link rel="apple-touch-icon" href="/kiosk/icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/kiosk/apple-touch-icon.png">
   <link rel="icon" type="image/svg+xml" href="/kiosk/icon.svg">
   <link rel="manifest" href="/kiosk/manifest.json">
   
-  <!-- Typography -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Typography: Self-hosted Fredoka via main.css @font-face -->
   
   <!-- Modular Design System -->
-  <link rel="stylesheet" href="/kiosk/css/main.css">
+  <link rel="stylesheet" href="/kiosk/css/main.css?v=20261127_02">
   <link rel="stylesheet" href="/kiosk/css/profile.css">
-  <link rel="stylesheet" href="/kiosk/css/catalog.css">
+  <link rel="stylesheet" href="/kiosk/css/catalog.css?v=20261127_02">
   <link rel="stylesheet" href="/kiosk/css/player.css">
   <link rel="stylesheet" href="/kiosk/css/grownups.css">
   <link rel="stylesheet" href="/kiosk/css/pin.css">
@@ -113,7 +110,9 @@
   <!-- Tablet Kiosk Application Container -->
   <div class="frame" id="app"></div>
 
-  <!-- Modular ES6 Application -->
+  <!-- Shared Utilities & Modular ES6 Application -->
+  <script src="/static/js/ui_utils.js?v=20261127_01"></script>
+  <script src="/static/js/series_utils.js?v=20261126_01"></script>
   <script type="module" src="/kiosk/js/app.js"></script>
 
 </body>

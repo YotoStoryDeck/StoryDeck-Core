@@ -23,12 +23,15 @@ export const state = {
   lockedPlayerId: null,
   profiles: [],
   catalog: [],
-  deviceConfig: { allow_profile_switch: true, assigned_profile: null },
+  deviceConfig: { allow_profile_switch: true, assigned_profile: null, abs_configured: false, yoto_configured: false },
   deviceToken: null,
+  refreshToken: null,
   activeProfile: null,
   activeDevice: null,
   isDevicePickerOpen: false,
   activeTab: 'all',  // 'all' | 'abs' | 'yoto' | 'series'
+  searchQuery: '',
+  sourceFilter: 'all', // 'all' | 'abs' | 'yoto'
   guActiveTab: 'sleep', // 'sleep' | 'target' | 'display' | 'network'
   card: null,           // Card currently active / playing on player
   previewCard: null,    // Card currently being inspected in detail view
@@ -42,7 +45,8 @@ export const state = {
     bedtime: '19:00',
     wakeTime: '07:00',
     brightness: 80, // 10% to 100% display backlight
-    clockSize: 2    // 0 = small, 1 = medium, 2 = large
+    clockSize: 2,   // 0 = small, 1 = medium, 2 = large
+    keepAwake: true // Screen Wake Lock when kiosk is visible
   },
   sleepTimerRemainingSec: 0, // countdown ticker in seconds
   localSessionActive: false, // true ONLY if current audio was initiated/controlled on this screen
@@ -93,6 +97,7 @@ export const state = {
     this.activeProfile = profile;
     this.activeDevice = this.resolveActiveDevice(profile);
     this.isDevicePickerOpen = false;
+    this.searchQuery = '';
   },
   setActiveDevice(device) {
     this.activeDevice = device;
@@ -148,6 +153,16 @@ export const state = {
   setActiveTab(tab) {
     this.activeTab = tab;
   },
+  setSearchQuery(q) {
+    this.searchQuery = String(q || '');
+  },
+  setSourceFilter(src) {
+    if (src === 'abs' && !this.deviceConfig?.abs_configured) {
+      this.sourceFilter = 'all';
+      return;
+    }
+    this.sourceFilter = (src === 'abs' || src === 'yoto') ? src : 'all';
+  },
   setCard(card) {
     this.card = card;
   },
@@ -159,6 +174,13 @@ export const state = {
   },
   setPlaying(playing) {
     this.isPlaying = playing;
+  },
+  isCardCurrentlyPlaying(card) {
+    if (!this.isPlaying || !this.card || !card) return false;
+    const cid = card.id || card.cardId;
+    const activeId = this.card.id || this.card.cardId;
+    if (cid && activeId && cid === activeId) return true;
+    return Boolean(card.title && this.card.title && card.title === this.card.title);
   }
 };
 state.init();

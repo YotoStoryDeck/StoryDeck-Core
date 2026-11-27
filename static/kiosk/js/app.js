@@ -19,21 +19,85 @@ import { timersMixin } from './timers.js';
 const App = {
   container: null,
   statusBadge: null,
+  _wakeLock: null,
   init() {
     this.container = document.getElementById('app');
     this.statusBadge = document.getElementById('brokerStatus');
-    // Enable full edge-to-edge Kiosk mode by default (unless framed with ?frame=1)
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('frame') !== '1' && params.get('bezel') !== '1') {
-      document.body.classList.add('kiosk-mode');
-    }
+    this.applyDisplayBrightness();
+    this.syncWakeLock();
+    window.addEventListener('pointerdown', () => this.syncWakeLock(), { passive: true, once: true });
     window.__storydeckSyncSettings = () => BrokerApi.syncDeviceSettings();
     // Suppress native browser context / long-press callout menus on touch tablets
     window.addEventListener('contextmenu', (e) => e.preventDefault());
     this.bindEvents();
     this.startSleepTimerTicker();
     this.startInactivityTracker();
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        this.syncWakeLock();
+        if (!state.isOffline && state.isApproved !== false) {
+          const prevScreen = state.screen;
+          BrokerApi.getDeviceConfig()
+            .then(() => {
+              this.syncActiveDevicePlayback();
+              this.updateLiveTelemetryUI(prevScreen);
+            })
+            .catch(() => {});
+        }
+      }
+    });
+    document.addEventListener('fullscreenchange', () => {
+      if (state.screen === 'grownups') this.render();
+    });
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      if (state.screen !== 'screensaver') return;
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (state.screen === 'screensaver') ScreensaverScreen.tick();
+      }, 100);
+    }, { passive: true });
     this.bootstrap();
+  },
+  async acquireWakeLock() {
+    if (state.parentSettings?.keepAwake === false) {
+      await this.releaseWakeLock();
+      return;
+    }
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator) || document.hidden || this._wakeLock) {
+      return;
+    }
+    try {
+      const sentinel = await navigator.wakeLock.request('screen');
+      this._wakeLock = sentinel;
+      sentinel.addEventListener('release', () => {
+        if (this._wakeLock === sentinel) this._wakeLock = null;
+      });
+    } catch (e) {
+      console.debug('Screen Wake Lock unavailable or deferred:', e?.message || e);
+    }
+  },
+  async releaseWakeLock() {
+    if (!this._wakeLock) return;
+    try {
+      await this._wakeLock.release();
+    } catch (e) {
+      // Ignore already-released sentinel errors
+    } finally {
+      this._wakeLock = null;
+    }
+  },
+  syncWakeLock() {
+    if (state.parentSettings?.keepAwake === false) {
+      this.releaseWakeLock();
+    } else {
+      this.acquireWakeLock();
+    }
+  },
+  applyDisplayBrightness() {
+    if (!this.container) return;
+    const val = Math.max(10, Math.min(100, Number(state.parentSettings?.brightness ?? 100) || 100));
+    this.container.style.filter = val < 100 ? `brightness(${val / 100})` : '';
   },
   /**
    * Confirms playback has successfully initiated on the physical player before switching to Now Playing.
@@ -44,8 +108,9 @@ const App = {
     const activeDev = state.activeDevice;
     if (activeDev && activeDev.online && activeDev.is_home === false) {
       if (state.blockRemotePlayback) {
-        alert(`${activeDev.name} is currently away from home (traveling).
-Remote playback from this bedside controller is blocked to avoid disturbing someone traveling.`);
+        const msg = `${activeDev.name} is currently away from home (traveling). Remote playback is blocked.`;
+        if (window.StoryDeckUI?.showToast) window.StoryDeckUI.showToast(msg, 'warning');
+        else alert(msg);
         return;
       } else {
         const proceed = confirm(`${activeDev.name} is currently away from home (traveling).
@@ -64,6 +129,12 @@ Are you sure you want to start audio playback on this remote player?`);
     try {
       const res = await BrokerApi.playMedia(card, chapterIndex);
       if (res && (res.ok || res.status === 'success')) {
+        const nowIso = new Date().toISOString();
+        card.last_played_at = nowIso;
+        const cardKey = card.id || card.cardId;
+        const catEntry = (state.catalog || []).find(c => (c.id || c.cardId) === cardKey);
+        if (catEntry) catEntry.last_played_at = nowIso;
+
         state.setCard(card);
         state.setPreviewCard(card);
         const resolvedIdx = (chapterIndex != null && chapterIndex >= 0)
@@ -81,7 +152,8 @@ Are you sure you want to start audio playback on this remote player?`);
         this.render();
       } else {
         const msg = res?.error || res?.message || 'Playback failed to start';
-        alert(`Could not start playback: ${msg}`);
+        if (window.StoryDeckUI?.showToast) window.StoryDeckUI.showToast(`Could not start playback: ${msg}`, 'danger');
+        else alert(`Could not start playback: ${msg}`);
         if (triggerEl && originalText) {
           triggerEl.innerHTML = originalText;
           triggerEl.style.opacity = '1';
@@ -90,7 +162,9 @@ Are you sure you want to start audio playback on this remote player?`);
       }
     } catch (err) {
       console.error('Playback initiation error:', err);
-      alert(`Playback error: ${err.message || err}`);
+      const errMsg = `Playback error: ${err.message || err}`;
+      if (window.StoryDeckUI?.showToast) window.StoryDeckUI.showToast(errMsg, 'danger');
+      else alert(errMsg);
       if (triggerEl && originalText) {
         triggerEl.innerHTML = originalText;
         triggerEl.style.opacity = '1';
@@ -150,20 +224,31 @@ Are you sure you want to start audio playback on this remote player?`);
         restoredEl.scrollLeft = savedScrollLeft;
       }
     }
+    const renderedNowbar = this.container.querySelector('.nowbar');
+    this._lastNowbarHtml = renderedNowbar ? renderedNowbar.outerHTML : null;
   },
   async selectProfile(profileId) {
     const p = state.profiles.find(x => x.id === profileId);
     if (!p) return;
     state.setActiveProfile(p);
+    const cached = BrokerApi.getCachedCatalog(p.id, state.activeDevice?.id);
+    const prevFp = cached ? cached.map(c => `${c.id}:${c.last_played_at || ''}`).join(',') : '';
+    if (cached) {
+      state.catalog = cached;
+      this.syncActiveDevicePlayback();
+    }
     state.setScreen('catalog');
     this.render();
-    // Fetch dynamic live catalog for selected profile
+    // Fetch dynamic live catalog for selected profile (stale-while-revalidate when cached)
     try {
-      await BrokerApi.fetchLiveCatalog(p.id);
-      
-      // Auto-bind active player's playback state to the Nowbar
+      const fresh = await BrokerApi.fetchLiveCatalog(p.id, state.activeDevice?.id);
+      const nextFp = (fresh || []).map(c => `${c.id}:${c.last_played_at || ''}`).join(',');
       this.syncActiveDevicePlayback();
-      this.render();
+      if (!cached || nextFp !== prevFp) {
+        this.render();
+      } else {
+        this.updateLiveTelemetryUI(state.screen);
+      }
     } catch (e) {
       console.error('Failed to load profile catalog:', e);
     }
@@ -195,7 +280,7 @@ Are you sure you want to start audio playback on this remote player?`);
           title: fullTitle,
           chapter_title: chapterTitle,
           author: author,
-          cover: coverUrl || 'https://placehold.co/122x193/2b2622/ffffff?text=Playing',
+          cover: coverUrl || '/static/img/placeholder.png',
           duration: dev.duration || matched?.duration || 1800,
           chapters: matched?.chapters || [{ title: chapterTitle, duration: dev.duration || 1800 }]
         };
@@ -210,21 +295,57 @@ Are you sure you want to start audio playback on this remote player?`);
       }
     }
   },
+  updateLiveTelemetryUI(prevScreen) {
+    if (!this.container) return;
+    if (state.screen !== prevScreen) {
+      this._lastNowbarHtml = null;
+      this.render();
+      return;
+    }
+    if (state.screen === 'now') {
+      if (!PlayerScreen.tick()) {
+        this.render();
+      }
+      return;
+    }
+    if (state.screen === 'catalog' || state.screen === 'detail') {
+      const nowbarEl = this.container.querySelector('.nowbar');
+      const nextNowbarHtml = PlayerScreen.renderNowbar();
+      if (nowbarEl && this._lastNowbarHtml !== nextNowbarHtml) {
+        nowbarEl.outerHTML = nextNowbarHtml;
+        this._lastNowbarHtml = nextNowbarHtml;
+      } else if (!nowbarEl) {
+        this.render();
+      }
+      if (state.screen === 'catalog') {
+        const dev = state.activeDevice;
+        const _ui = (typeof window !== 'undefined' && window.StoryDeckUI) ? window.StoryDeckUI : null;
+        const meta = _ui ? _ui.getDeviceStatusMeta(dev) : {
+          isAway: Boolean(dev && dev.online && dev.is_home === false),
+          icon: (dev && dev.online && dev.is_home === false) ? '✈️' : (dev?.is_playing ? '▶' : (dev?.online ? '●' : '○')),
+          statusClass: (dev && dev.online && dev.is_home === false) ? 'status-away' : (dev?.is_playing ? 'status-playing' : (dev?.online ? 'status-online' : 'status-offline')),
+        };
+        const dotEl = this.container.querySelector('.device-pill .device-dot');
+        const labelEl = this.container.querySelector('.device-pill .device-label');
+        if (dotEl) {
+          dotEl.className = `device-dot ${meta.statusClass}`;
+          dotEl.textContent = meta.icon;
+        }
+        if (labelEl && dev?.name) {
+          labelEl.textContent = dev.name;
+        }
+      }
+    }
+  },
   /**
-   * Continuous background health & telemetry monitor (every 5s)
+   * Continuous background health & telemetry monitor (every 5s, paused when hidden)
    */
   startHealthMonitor() {
     if (this._healthTimer) return;
     this._healthTimer = setInterval(async () => {
-      if (state.isOffline) return; // Managed by _pingTimer
+      if (state.isOffline || (typeof document !== 'undefined' && document.hidden)) return;
+      const prevScreen = state.screen;
       try {
-        const isAlive = await BrokerApi.ping();
-        if (!isAlive) {
-          console.warn('Broker ping check failed! Triggering offline mode.');
-          this.enterOfflineState();
-          return;
-        }
-        // Active background sync (every 5-10s)
         await BrokerApi.getDeviceConfig();
         if (state.isApproved === false) {
           console.warn('[Core] Device is quarantined in Core! Transitioning to pairing screen.');
@@ -232,9 +353,7 @@ Are you sure you want to start audio playback on this remote player?`);
           return;
         }
         this.syncActiveDevicePlayback();
-        if (state.screen === 'catalog' || state.screen === 'detail' || state.screen === 'now') {
-          this.render();
-        }
+        this.updateLiveTelemetryUI(prevScreen);
       } catch (err) {
         if (state.isApproved === false) {
           this.enterQuarantineState();

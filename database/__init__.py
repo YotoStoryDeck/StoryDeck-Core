@@ -23,18 +23,19 @@ from .devices import (
 )
 from .media import (
     upsert_media_items, get_media_item_by_id, get_catalog_matrix, prune_stale_media_items,
-    record_playback, get_playback_history,
+    record_playback, get_playback_history, get_device_playback_history,
     get_all_series_overrides, set_media_series_override, delete_media_series_override,
     batch_set_media_series_overrides
 )
 from .curation import (
-    sanitize_display_text, get_catalog_items_for_profile, set_item_highlight,
+    sanitize_display_text, get_catalog_items_for_profile, get_catalog_items_for_device, set_item_highlight,
     batch_update_media_highlight, set_item_physical, batch_update_media_physical,
     batch_update_profile_media_permissions
 )
 from .settings import (
     DEFAULT_SSO_CONFIG, get_system_settings, get_sso_config, set_system_setting, get_api_credentials, update_api_credentials,
-    get_master_api_key_details, get_master_api_key, regenerate_master_api_key
+    get_master_api_key_details, get_master_api_key, regenerate_master_api_key,
+    get_catalog_revision, bump_catalog_revision
 )
 from .firmware import (
     list_firmware_releases, get_firmware_release, get_latest_firmware_release,
@@ -56,14 +57,15 @@ __all__ = [
     "register_esp32_device", "get_esp32_device", "list_esp32_devices", "update_esp32_device",
     "revoke_esp32_device", "delete_esp32_device", "prune_stale_devices",
     "upsert_media_items", "get_media_item_by_id", "get_catalog_matrix", "prune_stale_media_items",
-    "record_playback", "get_playback_history",
+    "record_playback", "get_playback_history", "get_device_playback_history",
     "get_all_series_overrides", "set_media_series_override", "delete_media_series_override",
     "batch_set_media_series_overrides",
-    "sanitize_display_text", "get_catalog_items_for_profile", "set_item_highlight",
+    "sanitize_display_text", "get_catalog_items_for_profile", "get_catalog_items_for_device", "set_item_highlight",
     "batch_update_media_highlight", "set_item_physical", "batch_update_media_physical",
     "batch_update_profile_media_permissions",
     "DEFAULT_SSO_CONFIG", "get_system_settings", "get_sso_config", "set_system_setting", "get_api_credentials", "update_api_credentials",
     "get_master_api_key_details", "get_master_api_key", "regenerate_master_api_key",
+    "get_catalog_revision", "bump_catalog_revision",
     "list_firmware_releases", "get_firmware_release", "get_latest_firmware_release",
     "upsert_firmware_release", "set_active_latest_firmware", "delete_firmware_release",
 ]

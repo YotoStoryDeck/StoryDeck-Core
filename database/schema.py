@@ -186,6 +186,7 @@ def init_db():
                 offline_progress REAL DEFAULT 0.0,
                 offline_meta TEXT DEFAULT '{}',
                 local_progress TEXT DEFAULT '{}',
+                series_packing TEXT DEFAULT '',
                 icon_hash TEXT DEFAULT '',
                 nickname TEXT DEFAULT '',
                 owner_user_id TEXT DEFAULT '',
@@ -251,7 +252,7 @@ def init_db():
 # ============================================================================
 # Schema Migrations Engine (PRAGMA user_version)
 # ============================================================================
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 def run_schema_migrations(conn: sqlite3.Connection):
     """
     Applies incremental database schema migrations sequentially using SQLite's
@@ -576,6 +577,16 @@ def run_schema_migrations(conn: sqlite3.Connection):
 
             conn.execute("PRAGMA user_version = 16;")
         logger.info("Migrated SQLite schema to version 16 (added 5h rotational offline, series chaining, and own-place local progress columns).")
+
+    # Version 16 -> 17: Add per-slot series_packing override ('chapters' vs 'condense') on bridge_slots
+    if version < 17:
+        with conn:
+            cur.execute("PRAGMA table_info(bridge_slots);")
+            bs_cols = [c[1] for c in cur.fetchall()]
+            if bs_cols and "series_packing" not in bs_cols:
+                conn.execute("ALTER TABLE bridge_slots ADD COLUMN series_packing TEXT DEFAULT '';")
+            conn.execute("PRAGMA user_version = 17;")
+        logger.info("Migrated SQLite schema to version 17 (added series_packing column to bridge_slots).")
 
 # ============================================================================
 # Password Hashing & Security Helpers (PBKDF2-HMAC-SHA256)

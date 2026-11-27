@@ -152,7 +152,8 @@ function openBatchSeriesModal() {
     const na = parseNumericSeq(a.series_order);
     const nb = parseNumericSeq(b.series_order);
     if (na !== nb) return na - nb;
-    return cleanTitleForSort(a.title).localeCompare(cleanTitleForSort(b.title));
+    const clean = window.StoryDeckSeries ? window.StoryDeckSeries.cleanTitleForSort : (s => String(s || "").trim().toLowerCase());
+    return clean(a.title).localeCompare(clean(b.title));
   });
 
   const autoCheck = document.getElementById("batchSeriesAutoNumber");
@@ -213,7 +214,8 @@ function moveBatchSeriesRow(index, delta) {
 }
 
 function sortBatchSeriesAlpha() {
-  batchSeriesItems.sort((a, b) => cleanTitleForSort(a.title).localeCompare(cleanTitleForSort(b.title)));
+  const clean = window.StoryDeckSeries ? window.StoryDeckSeries.cleanTitleForSort : (s => String(s || "").trim().toLowerCase());
+  batchSeriesItems.sort((a, b) => clean(a.title).localeCompare(clean(b.title)));
   reindexBatchSeriesRows();
   renderBatchSeriesList();
 }

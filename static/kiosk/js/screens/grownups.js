@@ -1,6 +1,5 @@
 import { state } from '../state.js';
-import { Utils } from '../config.js';
-import { BrokerApi } from '../broker-api.js';
+import { CONFIG, Utils } from '../config.js';
 
 /**
  * Screen 5: Grown-Ups Settings Screen Component
@@ -21,6 +20,10 @@ export const GrownUpsScreen = {
     const brightness = state.parentSettings.brightness ?? 80;
     const clockSize = state.parentSettings.clockSize ?? 2;
     const clockSizeLabels = ['Small', 'Medium', 'Large'];
+    const keepAwake = state.parentSettings.keepAwake !== false;
+    const wakeLockSupported = typeof navigator !== 'undefined' && ('wakeLock' in navigator);
+    const isFullscreen = typeof document !== 'undefined' && Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+    const canFullscreen = typeof document !== 'undefined' && Boolean(document.documentElement?.requestFullscreen || document.documentElement?.webkitRequestFullscreen);
 
     return `
       <div class="grownups-screen">
@@ -155,12 +158,12 @@ export const GrownUpsScreen = {
               </div>
               <div class="gu-row">
                 <button class="gu-pill-btn ${!isStandalone ? 'active' : ''}" data-act="gu-set-mode" data-mode="core">Core Managed (Profiles)</button>
-                <button class="gu-pill-btn ${isStandalone ? 'active' : ''}" data-act="gu-set-mode" data-mode="standalone">Standalone Cloud (Players)</button>
+                <button class="gu-pill-btn ${isStandalone ? 'active' : ''}" data-act="gu-set-mode" data-mode="standalone">Player Mode (No Profiles)</button>
               </div>
               <div class="gu-info-text">
                 ${isStandalone 
-                  ? '<b>Standalone Mode:</b> Connects directly to Yoto Cloud without a local server. Single household account-wide card library.' 
-                  : '<b>Core Mode:</b> Connects to StoryDeck Core hub with Audiobookshelf streaming, multi-user profiles, and local proxy caching.'}
+                  ? '<b>Player Mode:</b> Browses the full household library without requiring a profile switch, tracking playback per selected Yoto player.' 
+                  : '<b>Core Mode:</b> Filters books, permissions, and history per individual listener profile.'}
               </div>
             </div>
           ` : ''}
@@ -175,7 +178,7 @@ export const GrownUpsScreen = {
               <div class="gu-slider-wrap">
                 <input type="range" class="gu-slider" min="10" max="100" value="${brightness}" data-act="gu-set-brightness" id="guBrightnessSlider">
               </div>
-              <div class="gu-info-text">Backlight PWM control (10% to 100%). Controls CH422G EXIO2 on Waveshare hardware.</div>
+              <div class="gu-info-text">Viewport dimming control (10% to 100%) for bedside screens and tablet displays.</div>
             </div>
 
             <div class="gu-section">
@@ -208,6 +211,37 @@ export const GrownUpsScreen = {
                 `).join('')}
               </div>
               <div class="gu-info-text">Configures 7-segment clock scale for bedside readability across the room.</div>
+            </div>
+
+            <div class="gu-section">
+              <div class="gu-sec-title">
+                <span>Keep Screen Awake (Wake Lock)</span>
+                <span style="font-size:12px; font-weight:600; color:${keepAwake ? '#16a34a' : '#8c8272'};">
+                  ${keepAwake ? 'On' : 'Off'}${!wakeLockSupported ? ' (Requires HTTPS/localhost)' : ''}
+                </span>
+              </div>
+              <div class="gu-row">
+                <button class="gu-pill-btn ${keepAwake ? 'active' : ''}" data-act="gu-set-wake-lock" data-val="true">Keep Screen Awake</button>
+                <button class="gu-pill-btn ${!keepAwake ? 'active' : ''}" data-act="gu-set-wake-lock" data-val="false">Allow OS Sleep</button>
+              </div>
+              <div class="gu-info-text">Prevents tablet auto-lock while StoryDeck is visible so the Night Clock and sleep timer stay active.</div>
+            </div>
+
+            <div class="gu-section">
+              <div class="gu-sec-title">
+                <span>Tablet Fullscreen Mode</span>
+                <span style="font-size:12px; font-weight:600; color:#8c8272;">${isFullscreen ? 'Active' : 'Windowed'}</span>
+              </div>
+              <div class="gu-row">
+                <button class="gu-pill-btn ${isFullscreen ? 'active' : ''}" data-act="gu-toggle-fullscreen" ${!canFullscreen ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''}>
+                  ${isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                </button>
+              </div>
+              <div class="gu-info-text">
+                ${canFullscreen
+                  ? 'Hides browser address bars on Android/Fire tablets when not launched as an installed PWA.'
+                  : 'Fullscreen API is not available in this browser (use Add to Home Screen for standalone fullscreen).'}
+              </div>
             </div>
           ` : ''}
 

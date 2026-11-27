@@ -7,6 +7,11 @@ import requests
 from core.config import logger
 
 
+def _is_retryable_status(code: int) -> bool:
+    """Return True for transient HTTP status codes worth retrying."""
+    return code in (408, 429) or code >= 500
+
+
 class YotoPlaylistsMixin:
     def get_card_detail(self, card_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves unwrapped card metadata/chapters from Yoto Cloud (/content/{id} or retail /card/{id})."""
@@ -103,7 +108,77 @@ class YotoPlaylistsMixin:
             logger.error("Exception deleting Yoto playlist %s: %s", card_id, e)
             return False
 
-    def upload_audio(self, audio: bytes, title: str, on_phase=None) -> Dict[str, Any]:
+    def _call_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_retries: int = 4,
+        retry_backoff: float = 2.0,
+        use_auth: bool = True,
+        label: str = "Yoto API",
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ):
+        """Invoke requests.get/put/post with backoff retries on network errors, 5xx/429/408, and 401 refresh."""
+        http_fn = {"GET": requests.get, "PUT": requests.put, "POST": requests.post}[method.upper()]
+        req_headers = dict(headers or {})
+        last_exc: Optional[Exception] = None
+        last_res = None
+
+        for attempt in range(max_retries):
+            try:
+                res = http_fn(url, headers=req_headers, **kwargs)
+                last_res = res
+                if res.status_code == 401 and use_auth and attempt < max_retries - 1:
+                    new_tok = self.get_token(force_refresh=True)
+                    if new_tok:
+                        req_headers["Authorization"] = f"Bearer {new_tok}"
+                        logger.warning("%s returned 401; refreshed token (attempt %d/%d)", label, attempt + 1, max_retries)
+                        continue
+                if _is_retryable_status(res.status_code) and attempt < max_retries - 1:
+                    delay = retry_backoff * (2 ** attempt)
+                    logger.warning(
+                        "%s transient HTTP %d (attempt %d/%d); retrying in %.1fs",
+                        label,
+                        res.status_code,
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                return res
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    delay = retry_backoff * (2 ** attempt)
+                    logger.warning(
+                        "%s transient network error (attempt %d/%d); retrying in %.1fs: %s",
+                        label,
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        exc,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+
+        if last_res is not None:
+            return last_res
+        raise last_exc  # pragma: no cover
+
+    def upload_audio(
+        self,
+        audio: bytes,
+        title: str,
+        on_phase=None,
+        max_retries: int = 4,
+        retry_backoff: float = 2.0,
+        poll_interval: float = 2.0,
+        timeout: float = 900.0,
+    ) -> Dict[str, Any]:
         """Uploads an MP3 track to Yoto Cloud transcoding pipeline and returns sha/duration/fileSize."""
         token = self.get_token()
         if not token:
@@ -113,7 +188,16 @@ class YotoPlaylistsMixin:
         if on_phase:
             on_phase("uploading")
 
-        res = requests.get(f"{self.API_URL}/media/transcode/audio/uploadUrl", headers=headers, timeout=15)
+        res = self._call_with_retry(
+            "GET",
+            f"{self.API_URL}/media/transcode/audio/uploadUrl",
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+            use_auth=True,
+            label=f"Yoto uploadUrl ({title})",
+            headers=headers,
+            timeout=15,
+        )
         if res.status_code != 200:
             raise RuntimeError(f"Yoto uploadUrl request failed ({res.status_code}): {res.text}")
         up = res.json().get("upload", {})
@@ -122,21 +206,53 @@ class YotoPlaylistsMixin:
         if not upload_url or not upload_id:
             raise RuntimeError("Missing uploadUrl or uploadId in Yoto response")
 
-        put_res = requests.put(upload_url, data=audio, headers={"Content-Type": "audio/mpeg"}, timeout=600)
+        put_res = self._call_with_retry(
+            "PUT",
+            upload_url,
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+            use_auth=False,
+            label=f"Yoto audio PUT ({title})",
+            data=audio,
+            headers={"Content-Type": "audio/mpeg"},
+            timeout=600,
+        )
         if put_res.status_code not in (200, 201, 204):
             raise RuntimeError(f"Yoto PUT audio failed ({put_res.status_code}): {put_res.text[:200]}")
 
         if on_phase:
             on_phase("processing")
         began = time.time()
-        poll_interval = 2.0
-        timeout = 900.0
+        consecutive_errors = 0
+        max_consecutive_errors = 15
+        auth_refreshes = 0
+
         while time.time() - began < timeout:
-            t_res = requests.get(
-                f"{self.API_URL}/media/upload/{upload_id}/transcoded",
-                headers=headers, params={"loudnorm": "false"}, timeout=15
-            )
+            try:
+                t_res = requests.get(
+                    f"{self.API_URL}/media/upload/{upload_id}/transcoded",
+                    headers=headers,
+                    params={"loudnorm": "false"},
+                    timeout=15,
+                )
+            except requests.RequestException as exc:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
+                delay = min(15.0, poll_interval * (2 ** min(consecutive_errors - 1, 3)))
+                logger.warning(
+                    "Yoto transcode poll transient error for %s (%d/%d); retrying in %.1fs: %s",
+                    title,
+                    consecutive_errors,
+                    max_consecutive_errors,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
+                continue
+
             if t_res.status_code == 200:
+                consecutive_errors = 0
                 t = t_res.json().get("transcode", {})
                 sha = t.get("transcodedSha256")
                 if sha:
@@ -147,8 +263,36 @@ class YotoPlaylistsMixin:
                         "duration": info.get("duration"),
                         "fileSize": info.get("fileSize"),
                         "channels": info.get("channels") or "mono",
-                        "format": info.get("format") or "mp3"
+                        "format": info.get("format") or "mp3",
                     }
+            elif t_res.status_code == 401 and auth_refreshes < 2:
+                auth_refreshes += 1
+                new_tok = self.get_token(force_refresh=True)
+                if new_tok:
+                    headers["Authorization"] = f"Bearer {new_tok}"
+                    consecutive_errors = 0
+                    logger.warning("Yoto transcode poll returned 401 for %s; refreshed token (%d/2)", title, auth_refreshes)
+                    continue
+            elif _is_retryable_status(t_res.status_code):
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    raise RuntimeError(
+                        f"Yoto transcode poll failed repeatedly ({t_res.status_code}) for {title}"
+                    )
+                delay = min(15.0, poll_interval * (2 ** min(consecutive_errors - 1, 3)))
+                logger.warning(
+                    "Yoto transcode poll HTTP %d for %s (%d/%d); retrying in %.1fs",
+                    t_res.status_code,
+                    title,
+                    consecutive_errors,
+                    max_consecutive_errors,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            else:
+                consecutive_errors = 0
+
             time.sleep(poll_interval)
 
         raise TimeoutError(f"Yoto transcode timed out after {timeout}s for {title}")
@@ -281,7 +425,17 @@ class YotoPlaylistsMixin:
 
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         try:
-            res = requests.post(f"{self.API_URL}/content", headers=headers, json=body, timeout=25)
+            res = self._call_with_retry(
+                "POST",
+                f"{self.API_URL}/content",
+                max_retries=3,
+                retry_backoff=2.0,
+                use_auth=True,
+                label=f"Yoto save_track_playlist ({title})",
+                headers=headers,
+                json=body,
+                timeout=25,
+            )
             if res.status_code in (200, 201):
                 data = res.json()
                 cid = data.get("card", {}).get("cardId") or data.get("cardId") or valid_card_id

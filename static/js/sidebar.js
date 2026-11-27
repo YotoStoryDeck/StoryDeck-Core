@@ -7,33 +7,6 @@
 
 const SIDEBAR_STORAGE_KEY = "storydeck_sidebar_collapsed";
 
-function showToast(message, type = "info") {
-  let container = document.getElementById("toastContainer");
-  if (!container) {
-    container = document.createElement("div");
-    container.id = "toastContainer";
-    container.className = "toast-container";
-    container.style.cssText = "position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; max-width: 340px;";
-    document.body.appendChild(container);
-  }
-  const toast = document.createElement("div");
-  toast.className = "toast";
-  const borderColors = {
-    success: "rgba(16, 185, 129, 0.55)",
-    warning: "rgba(245, 158, 11, 0.55)",
-    danger: "rgba(239, 68, 68, 0.55)",
-    info: "rgba(59, 130, 246, 0.55)"
-  };
-  toast.style.borderLeft = `3px solid ${borderColors[type] || borderColors.info}`;
-  toast.innerText = message;
-  container.appendChild(toast);
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transition = "opacity 0.3s";
-    setTimeout(() => toast.remove(), 300);
-  }, 3500);
-}
-
 function initSidebar() {
   try {
     if (localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1") {

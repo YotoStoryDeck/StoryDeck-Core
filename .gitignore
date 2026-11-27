@@ -18,6 +18,7 @@ ENV/
 .env
 .env.local
 .tmp/
+.gemini/
 
 # StoryDeck Runtime Data & Caches (Mounted as Docker volumes)
 data/*

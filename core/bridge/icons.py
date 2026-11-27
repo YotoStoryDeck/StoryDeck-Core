@@ -321,20 +321,57 @@ def render_style(
     return render_corner(cover16, number, style if style in CORNERS else DEFAULT_STYLE)
 
 
+def resolve_source_chapter_idx(
+    chapters: Optional[List[Dict[str, Any]]],
+    start_time: float,
+    end_time: Optional[float] = None,
+) -> int:
+    """
+    Maps a playlist track's [start_time, end_time) interval back to the 0-based
+    index in the Audiobookshelf item's raw `chapters` list so split chapters,
+    unchaptered split books, and multi-book series tracks resolve custom artwork
+    saved at `<abs_item_id>_<chapter_idx>.png`.
+    """
+    if not chapters or len(chapters) <= 1:
+        return 0
+
+    st = float(start_time or 0.0)
+    if end_time is not None and float(end_time) > st:
+        probe = st + min(1.0, max(0.0, (float(end_time) - st) * 0.1))
+    else:
+        probe = st + 0.5
+
+    for idx, ch in enumerate(chapters):
+        ch_start = float(ch.get("start") or 0.0)
+        ch_end = float(ch.get("end") or 0.0)
+        if ch_end <= ch_start and idx + 1 < len(chapters):
+            ch_end = float(chapters[idx + 1].get("start") or ch_start)
+        if ch_end > ch_start and ch_start <= probe < ch_end:
+            return idx
+
+    best_idx = 0
+    for idx, ch in enumerate(chapters):
+        if float(ch.get("start") or 0.0) <= st + 0.5:
+            best_idx = idx
+    return best_idx
+
+
 def render_track_icon_png(
     abs_item_id: str,
     track_idx: int = 1,
     style: str = DEFAULT_STYLE,
     fraction: Optional[float] = None,
     token: Optional[str] = None,
+    chapter_idx: Optional[int] = None,
 ) -> bytes:
     """
     Resolves a 16x16 PNG icon for (abs_item_id, track_idx):
-    1. Checks CUSTOM_ICONS_DIR for a curated custom chapter icon (`<abs_item_id>_<0-indexed>.png`).
+    1. Checks CUSTOM_ICONS_DIR for a curated custom chapter icon (`<abs_item_id>_<0-indexed>.png`),
+       using `chapter_idx` when provided or `track_idx - 1` otherwise.
     2. Otherwise renders the book's 16x16 cover with the chapter/track number overlay in `style`.
     """
     if abs_item_id:
-        icon_idx = max(0, int(track_idx) - 1)
+        icon_idx = max(0, int(chapter_idx)) if chapter_idx is not None else max(0, int(track_idx) - 1)
         local_icon = CUSTOM_ICONS_DIR / f"{abs_item_id}_{icon_idx}.png"
         if local_icon.is_file():
             try:
@@ -351,16 +388,23 @@ def get_or_upload_yoto_icon(
     track_idx: int = 1,
     style: str = DEFAULT_STYLE,
     token: Optional[str] = None,
+    chapter_idx: Optional[int] = None,
 ) -> Optional[str]:
     """
-    Renders the 16x16 PNG for (abs_item_id, track_idx), uploads it once to Yoto Cloud
+    Renders the 16x16 PNG for (abs_item_id, track_idx / chapter_idx), uploads it once to Yoto Cloud
     (`POST /media/displayIcons/user/me/upload`), and returns `'yoto:#<mediaId>'` for offline tracks.
     """
     if not abs_item_id or not clients.yoto_client or not hasattr(clients.yoto_client, "upload_display_icon"):
         return None
-    png_bytes = render_track_icon_png(abs_item_id, track_idx=track_idx, style=style, token=token)
+    png_bytes = render_track_icon_png(
+        abs_item_id,
+        track_idx=track_idx,
+        style=style,
+        token=token,
+        chapter_idx=chapter_idx,
+    )
     digest = hashlib.sha256(png_bytes).hexdigest()[:16]
-    cache_key = f"{abs_item_id}:{track_idx}:{digest}"
+    cache_key = f"{abs_item_id}:{digest}"
     if cache_key in _UPLOADED_ICON_CACHE:
         return _UPLOADED_ICON_CACHE[cache_key]
     try:

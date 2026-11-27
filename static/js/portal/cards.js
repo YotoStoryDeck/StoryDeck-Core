@@ -7,183 +7,6 @@ let _detectedPairCard = null;
 let _rePairTargetSlotId = null;
 let _cardsTranscodePollTimer = null;
 
-function openPairCardModal(rePairSlotId = null) {
-  const modal = document.getElementById("pairCardModal");
-  if (!modal) return;
-  _detectedPairCard = null;
-  _rePairTargetSlotId = rePairSlotId || null;
-
-  const devSel = document.getElementById("pairDeviceSelect");
-  if (devSel) {
-    devSel.innerHTML = "";
-    (currentDevices || []).forEach(d => {
-      const opt = document.createElement("option");
-      const devId = d.deviceId || d.id;
-      opt.value = devId;
-      opt.textContent = typeof formatPlayerOptionLabel === "function"
-        ? formatPlayerOptionLabel(d)
-        : `${d.online ? "🟢" : "🔴"} ${d.name || devId}`;
-      if (devId === activeDeviceId) opt.selected = true;
-      devSel.appendChild(opt);
-    });
-  }
-
-  const profSel = document.getElementById("pairProfileSelect");
-  if (profSel) {
-    profSel.innerHTML = "";
-    Object.values(currentProfiles || {}).forEach(p => {
-      const opt = document.createElement("option");
-      opt.value = p.id;
-      opt.textContent = p.display_name || p.id;
-      if (p.id === activeProfileId) opt.selected = true;
-      profSel.appendChild(opt);
-    });
-  }
-
-  document.getElementById("pairCardOptions").style.display = "none";
-  const confirmBtn = document.getElementById("btnConfirmPairCard");
-  if (confirmBtn) {
-    confirmBtn.style.display = "none";
-    confirmBtn.innerText = _rePairTargetSlotId ? "🔄 Update Linked Card" : "🔗 Pair Card";
-  }
-  document.getElementById("pairDetectStatus").innerHTML = _rePairTargetSlotId
-    ? `🔄 <strong>Re-Pairing Slot:</strong> Insert the physical card into the selected Yoto Player to update its linked Card ID.`
-    : "📡 Listening... Insert a physical card into the selected Yoto Player.";
-  modal.style.display = "flex";
-
-  pollPairCard();
-  if (_pairPollTimer) clearInterval(_pairPollTimer);
-  _pairPollTimer = setInterval(pollPairCard, 2500);
-}
-
-function closePairCardModal() {
-  if (_pairPollTimer) { clearInterval(_pairPollTimer); _pairPollTimer = null; }
-  const modal = document.getElementById("pairCardModal");
-  if (modal) modal.style.display = "none";
-}
-
-function onPairTargetTypeChange() {
-  const t = document.getElementById("pairTargetType")?.value || "profile";
-  document.getElementById("pairProfileGroup").style.display = t === "profile" ? "block" : "none";
-  document.getElementById("pairFleetNameGroup").style.display = t === "fleet" ? "block" : "none";
-}
-
-async function pollPairCard() {
-  const devId = document.getElementById("pairDeviceSelect")?.value;
-  const statusEl = document.getElementById("pairDetectStatus");
-  const optsEl = document.getElementById("pairCardOptions");
-  const btnEl = document.getElementById("btnConfirmPairCard");
-  if (!devId || !statusEl) return;
-
-  try {
-    const res = await fetch(`/api/cards/detect?device_id=${encodeURIComponent(devId)}`, { cache: "no-store" });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      statusEl.innerHTML = `⚠️ ${data.error || "Unable to read player status."}`;
-      return;
-    }
-    if (!data.detected) {
-      _detectedPairCard = null;
-      statusEl.style.background = "rgba(59,130,246,0.08)";
-      statusEl.style.borderColor = "rgba(59,130,246,0.25)";
-      statusEl.innerHTML = `📡 Listening on selected player... Insert a physical card now.${data.online ? "" : " <em>(Player appears offline)</em>"}`;
-      if (optsEl) optsEl.style.display = "none";
-      if (btnEl) btnEl.style.display = "none";
-      return;
-    }
-
-    _detectedPairCard = data;
-    const linkedNote = data.already_linked
-      ? `<div style="margin-top:4px; font-size:11px; color:#93c5fd;">ℹ️ Already linked to slot: <code>${data.already_linked.slot_id}</code> (${data.already_linked.title || ""})</div>`
-      : "";
-
-    if (data.is_editable) {
-      const heading = data.is_blank_myo
-        ? "✨ Blank MYO Card Detected (Make Your Own Guide)"
-        : "✅ Editable MYO Card Detected";
-      statusEl.style.background = "rgba(16,185,129,0.1)";
-      statusEl.style.borderColor = "rgba(16,185,129,0.4)";
-      statusEl.innerHTML =
-        `<div style="font-weight:700; color:#4ade80;">${heading}</div>` +
-        `<div style="margin-top:4px;"><strong>${data.title}</strong> &nbsp;<code>${data.card_id}</code></div>` +
-        `<div class="text-secondary" style="font-size:11px; margin-top:2px;">${data.reason}</div>` +
-        linkedNote;
-      if (optsEl) optsEl.style.display = _rePairTargetSlotId ? "none" : "block";
-      if (btnEl) btnEl.style.display = "inline-flex";
-      if (!_rePairTargetSlotId) onPairTargetTypeChange();
-    } else {
-      statusEl.style.background = "rgba(245,158,11,0.1)";
-      statusEl.style.borderColor = "rgba(245,158,11,0.45)";
-      statusEl.innerHTML =
-        `<div style="font-weight:700; color:#fbbf24;">🔒 Locked Card Detected (Retail / Yoto Store)</div>` +
-        `<div style="margin-top:4px;"><strong>${data.title}</strong> &nbsp;<code>${data.card_id}</code></div>` +
-        `<div class="text-secondary" style="font-size:11px; margin-top:4px;">${data.reason}</div>`;
-      if (optsEl) optsEl.style.display = "none";
-      if (btnEl) btnEl.style.display = "none";
-    }
-  } catch {
-    statusEl.innerHTML = "⚠️ Network error polling player.";
-  }
-}
-
-async function confirmPairCard() {
-  if (!_detectedPairCard || !_detectedPairCard.is_editable) return;
-  const btn = document.getElementById("btnConfirmPairCard");
-  if (btn) { btn.disabled = true; btn.innerText = _rePairTargetSlotId ? "Updating..." : "Pairing..."; }
-
-  try {
-    let res, data;
-    if (_rePairTargetSlotId) {
-      res = await fetch(`/api/cards/${encodeURIComponent(_rePairTargetSlotId)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ yoto_card_id: _detectedPairCard.card_id })
-      });
-      data = await res.json();
-      if (res.ok) {
-        closePairCardModal();
-        await loadCards();
-        showToast(`Re-paired card to '${_detectedPairCard.card_id}'!`, "success");
-      } else {
-        showToast(data.error || "Failed to re-pair card.", "danger");
-      }
-      return;
-    }
-
-    const target = document.getElementById("pairTargetType")?.value || "profile";
-    const profileId = document.getElementById("pairProfileSelect")?.value || "";
-    const name = document.getElementById("pairFleetName")?.value.trim() || _detectedPairCard.title || "";
-    res = await fetch("/api/cards/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        card_id: _detectedPairCard.card_id,
-        target,
-        profile_id: profileId,
-        name
-      })
-    });
-    data = await res.json();
-    if (res.ok && data.ok) {
-      closePairCardModal();
-      await loadCards();
-      showToast(`Paired card '${_detectedPairCard.card_id}' successfully!`, "success");
-    } else {
-      showToast(data.error || "Failed to pair card.", "danger");
-    }
-  } catch {
-    showToast("Network error pairing card.", "danger");
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerText = _rePairTargetSlotId ? "🔄 Update Linked Card" : "🔗 Pair Card"; }
-  }
-}
-
-function startRePairFromEditModal() {
-  const slotId = document.getElementById("editCardSlotId")?.value || "";
-  if (!slotId) return;
-  closeEditCardSlotModal();
-  openPairCardModal(slotId);
-}
 
 async function loadCards() {
   try {
@@ -252,16 +75,62 @@ function createCardItemElement(slot, isProfile) {
 
   const transcodeJob = slot.transcode;
   let progressHtml = "";
-  if (transcodeJob && transcodeJob.status !== "ready") {
+  if (transcodeJob && transcodeJob.status === "failed") {
+    const errText = escapeHtml(transcodeJob.error || "Unknown offline build error");
+    progressHtml = `
+      <div style="margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <span style="font-size: 11px; font-weight: 600; color: #fca5a5;">❌ Offline build failed (${transcodeJob.done || 0}/${transcodeJob.total || 0} tracks)</span>
+          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'start')">🔄 Retry</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel & clear transfer status">✖️</button>
+          </div>
+        </div>
+        <div style="font-size: 11px; color: #fecaca; word-break: break-word;">${errText}</div>
+      </div>
+    `;
+  } else if (transcodeJob && transcodeJob.status === "paused") {
+    progressHtml = `
+      <div style="margin-top: 8px; padding: 7px 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <span style="font-size: 11px; font-weight: 600; color: #fcd34d;">⏸️ Offline transfer paused (${transcodeJob.done || 0}/${transcodeJob.total || 0} tracks)</span>
+          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+            <button class="btn btn-primary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'start')">▶️ Resume</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'stop')">⏹️ Stop</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel & clear transfer">✖️</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (transcodeJob && transcodeJob.status === "stopped") {
+    progressHtml = `
+      <div style="margin-top: 8px; padding: 7px 10px; border-radius: 6px; background: rgba(148, 163, 184, 0.10); border: 1px solid rgba(148, 163, 184, 0.28);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <span style="font-size: 11px; color: var(--text-secondary);">⏹️ Offline transfer stopped (${transcodeJob.done || 0}/${transcodeJob.total || 0} tracks)</span>
+          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+            <button class="btn btn-primary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'start')">▶️ Start</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel & clear transfer">✖️</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (transcodeJob && transcodeJob.status !== "ready") {
     const pct = Math.round((transcodeJob.progress || 0) * 100);
+    const isPausing = transcodeJob.status === "pausing";
+    const isStopping = transcodeJob.status === "stopping";
     const curLabel = transcodeJob.current_title
       ? ` — Track ${transcodeJob.current_track || (transcodeJob.done + 1)}: ${escapeHtml(transcodeJob.current_title)}`
       : "";
     progressHtml = `
       <div style="margin-top: 6px;">
-        <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--accent-abs); margin-bottom: 2px; gap: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--accent-abs); margin-bottom: 3px; gap: 6px;">
           <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">⏳ ${escapeHtml(transcodeJob.status)} (${transcodeJob.done}/${transcodeJob.total} tracks)${curLabel}</span>
-          <span style="flex-shrink: 0;">${pct}%</span>
+          <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+            <span>${pct}%</span>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 1px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'pause')" ${(isPausing || isStopping) ? 'disabled' : ''} title="Pause transfer">⏸️</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 1px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'stop')" ${isStopping ? 'disabled' : ''} title="Stop transfer">⏹️</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 1px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel transfer">✖️</button>
+          </div>
         </div>
         <div style="height: 4px; background: rgba(0,0,0,0.3); border-radius: 2px; overflow: hidden;">
           <div style="width: ${pct}%; height: 100%; background: var(--accent-abs); transition: width 0.3s ease;"></div>
@@ -323,72 +192,6 @@ function createCardItemElement(slot, isProfile) {
   return el;
 }
 
-function openEditCardSlotModal(slotId) {
-  const slot = (cardSlots || []).find(s => s.slot_id === slotId);
-  if (!slot) return;
-  const modal = document.getElementById("editCardSlotModal");
-  if (!modal) return;
-  document.getElementById("editCardSlotId").value = slot.slot_id;
-  document.getElementById("editCardCustomId").value = slot.slot_id;
-  document.getElementById("editCardNickname").value = (slot.nickname || "").trim() || slot.slot_id;
-  const isPersonal = slot.kind === "profile_primary" || Boolean(slot.owner_profile_id);
-  document.getElementById("editCardKind").value = isPersonal ? "profile_primary" : "permanent_myo";
-
-  const profSel = document.getElementById("editCardOwnerProfile");
-  if (profSel) {
-    profSel.innerHTML = "";
-    Object.values(currentProfiles || {}).forEach(p => {
-      const opt = document.createElement("option");
-      opt.value = p.id;
-      opt.textContent = p.display_name || p.id;
-      if (p.id === slot.owner_profile_id) opt.selected = true;
-      profSel.appendChild(opt);
-    });
-  }
-  onEditCardKindChange();
-  modal.style.display = "flex";
-}
-
-function closeEditCardSlotModal() {
-  const modal = document.getElementById("editCardSlotModal");
-  if (modal) modal.style.display = "none";
-}
-
-function onEditCardKindChange() {
-  const kind = document.getElementById("editCardKind")?.value || "permanent_myo";
-  const grp = document.getElementById("editCardProfileGroup");
-  if (grp) grp.style.display = kind === "profile_primary" ? "block" : "none";
-}
-
-async function saveEditedCardSlot() {
-  const slotId = document.getElementById("editCardSlotId")?.value || "";
-  const newSlotId = document.getElementById("editCardCustomId")?.value.trim() || slotId;
-  const nickname = document.getElementById("editCardNickname")?.value.trim() || "";
-  const kind = document.getElementById("editCardKind")?.value || "permanent_myo";
-  const ownerProfileId = kind === "profile_primary" ? (document.getElementById("editCardOwnerProfile")?.value || "") : "";
-  if (!slotId || !nickname || !newSlotId) return;
-  const btn = document.getElementById("btnSaveEditCardSlot");
-  if (btn) { btn.disabled = true; btn.innerText = "Saving..."; }
-  try {
-    const res = await fetch(`/api/cards/${encodeURIComponent(slotId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ new_slot_id: newSlotId, nickname, kind, owner_profile_id: ownerProfileId })
-    });
-    if (res.ok) {
-      closeEditCardSlotModal();
-      await loadCards();
-      showToast("Card updated.", "success");
-    } else {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || "Failed to update card.", "danger");
-    }
-  } catch {
-    showToast("Network error updating card.", "danger");
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerText = "💾 Save Card"; }
-  }
-}
 
 async function changeCardSpeed(slotId, speedVal) {
   try {
@@ -434,6 +237,49 @@ async function switchCardDeliveryMode(slotId, mode) {
   }
 }
 
+async function controlCardTransfer(slotId, action) {
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(slotId)}/transfer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const msgMap = {
+        pause: "Pausing offline transfer...",
+        stop: "Stopping offline transfer...",
+        cancel: "Offline transfer cancelled.",
+        start: "Starting offline transfer...",
+        resume: "Resuming offline transfer..."
+      };
+      showToast(msgMap[action] || "Transfer updated.", "info");
+      loadCards();
+    } else {
+      showToast(data.error || `Failed to ${action} transfer.`, "danger");
+    }
+  } catch (err) {
+    console.error("Card transfer control error:", err);
+    showToast("Network error updating transfer.", "danger");
+  }
+}
+
+async function retryCardSync(slotId) {
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(slotId)}/retry`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showToast("Retrying card build...", "info");
+      loadCards();
+    } else {
+      showToast(data.error || "Failed to retry card build.", "danger");
+    }
+  } catch (err) {
+    console.error("Card retry error:", err);
+    showToast("Network error retrying card build.", "danger");
+  }
+}
+
 async function loadHouseholdYotoCards() {
   try {
     const res = await fetch("/api/library/yoto");
@@ -474,56 +320,6 @@ async function deleteCardSlot(slotId) {
     loadCards();
   } catch (err) {
     console.error("Delete slot error:", err);
-  }
-}
-
-function openAddCardModal() {
-  document.getElementById("newSlotId").value = "";
-  document.getElementById("newSlotTitle").value = "";
-  const sel = document.getElementById("newSlotYotoCardSelect");
-  if (sel) sel.value = "";
-  loadHouseholdYotoCards();
-  document.getElementById("addCardModal").style.display = "flex";
-}
-
-function closeAddCardModal() {
-  document.getElementById("addCardModal").style.display = "none";
-}
-
-async function executeCreateCardSlot() {
-  const slotId = document.getElementById("newSlotId").value.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
-  const title = document.getElementById("newSlotTitle").value.trim();
-  const yotoCardId = document.getElementById("newSlotYotoCardSelect")?.value || "";
-  if (!slotId) return alert("Slot ID is required");
-
-  try {
-    const res = await fetch("/api/cards", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slot_id: slotId, title: title || slotId, kind: "permanent_myo" })
-    });
-    if (res.ok) {
-      if (yotoCardId) {
-        const matched = householdYotoCards.find(c => (c.yoto_card_id || c.id) === yotoCardId);
-        await fetch("/api/cards/assign", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            slot_id: slotId,
-            yoto_card_id: yotoCardId,
-            title: title || (matched ? matched.title : slotId),
-            author: matched ? matched.author : "Official Yoto Card",
-            mode: "retail"
-          })
-        });
-      }
-      closeAddCardModal();
-      loadCards();
-    } else {
-      alert("Failed to create card slot");
-    }
-  } catch (err) {
-    console.error("Create card error:", err);
   }
 }
 

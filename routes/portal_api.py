@@ -142,11 +142,13 @@ def start_player_card():
     mqtt = get_mqtt_bridge()
     if mqtt.is_connected and mqtt.play(device_id, card_id, track=chapter, chapter_key=ck_val, track_key=tk_val):
         target_prof = str(data.get("profile_id") or "").strip()
-        if target_prof and target_prof != "__all__":
-            try:
+        try:
+            if target_prof and target_prof != "__all__":
                 database.record_playback(card_id, target_prof)
-            except Exception:
-                pass
+            if device_id:
+                database.record_playback(card_id, f"device:{device_id}")
+        except Exception:
+            pass
         return jsonify({"ok": True, "device_id": device_id, "card_id": card_id, "chapter": chapter, "chapter_key": ck_val, "track_key": tk_val, "via": "mqtt"})
 
     if not clients.yoto_client:
@@ -155,11 +157,13 @@ def start_player_card():
     ok = clients.yoto_client.start_playback(device_id, card_id, chapter=chapter, chapter_key=ck_val, track_key=tk_val)
     if ok:
         target_prof = str(data.get("profile_id") or "").strip()
-        if target_prof and target_prof != "__all__":
-            try:
+        try:
+            if target_prof and target_prof != "__all__":
                 database.record_playback(card_id, target_prof)
-            except Exception:
-                pass
+            if device_id:
+                database.record_playback(card_id, f"device:{device_id}")
+        except Exception:
+            pass
     return jsonify({"ok": ok, "device_id": device_id, "card_id": card_id, "chapter": chapter})
 
 
@@ -176,9 +180,7 @@ def get_bridge_mqtt_status():
 
 def _query_profile_library_catalog(profile_id: str) -> List[Dict[str, Any]]:
     """Builds the combined curated ABS + Yoto catalog list (matching Kiosk) for a profile or '__all__' household view."""
-    import hashlib
-    import urllib.parse
-    from database.curation import get_catalog_items_for_profile, sanitize_display_text
+    from database.curation import build_catalog_thumb_url, get_catalog_items_for_profile, sanitize_display_text
     from database.media import get_all_playback_history
 
     if profile_id == "__all__":
@@ -193,18 +195,7 @@ def _query_profile_library_catalog(profile_id: str) -> List[Dict[str, Any]]:
                 continue
 
             item_id = it.get("id") or ""
-            cover_url = it.get("cover_url") or ""
-            cover_v = hashlib.sha256(cover_url.encode("utf-8")).hexdigest()[:8] if cover_url else "1"
-            if is_yoto:
-                if cover_url and not cover_url.startswith("/api/thumb"):
-                    thumb = f"/api/thumb?type=yoto&id={item_id}&url={urllib.parse.quote(cover_url)}&v={cover_v}"
-                elif not cover_url:
-                    thumb = f"/api/thumb?type=yoto&id={item_id}&v={cover_v}"
-                else:
-                    thumb = cover_url if "v=" in cover_url else f"{cover_url}{'&' if '?' in cover_url else '?'}v={cover_v}"
-            else:
-                base_t = cover_url or f"/api/thumb?type=abs&id={item_id}"
-                thumb = base_t if "v=" in base_t else f"{base_t}{'&' if '?' in base_t else '?'}v={cover_v}"
+            thumb = build_catalog_thumb_url(item_id, it.get("cover_url") or "", is_yoto=is_yoto)
 
             results.append({
                 "id": item_id,
@@ -244,7 +235,10 @@ def get_profile_library_catalog(profile_id: str):
             return jsonify({"ok": False, "error": "Guest accounts are scoped to assigned profiles."}), 403
     """Returns curated ABS audiobooks and series permitted for the specified profile."""
     try:
-        return jsonify(_query_profile_library_catalog(profile_id))
+        resp = jsonify(_query_profile_library_catalog(profile_id))
+        exclude_single = bool(database.get_system_settings().get("exclude_single_card_series", True))
+        resp.headers["X-Exclude-Single-Card-Series"] = "1" if exclude_single else "0"
+        return resp
     except Exception as e:
         logger.error("Failed to query catalog for profile %s: %s", profile_id, e)
         return jsonify([])

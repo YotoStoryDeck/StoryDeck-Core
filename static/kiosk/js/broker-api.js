@@ -5,6 +5,19 @@ import { state } from './state.js';
  * Handles device announcement, token rotation, profile discovery, and catalog fetching.
  */
 export const BrokerApi = {
+  _catalogCache: new Map(),
+  _chaptersById: new Map(),
+
+  _catalogCacheKey(profileId = null, deviceId = null) {
+    const isStandalone = state.mode === 'standalone' || !profileId;
+    const targetKey = isStandalone ? '__all__' : String(profileId).toLowerCase();
+    const devParam = String(deviceId || state.activeDevice?.id || '').trim().toLowerCase();
+    return `${targetKey}|${devParam}`;
+  },
+
+  getCachedCatalog(profileId = null, deviceId = null) {
+    return this._catalogCache.get(this._catalogCacheKey(profileId, deviceId)) || null;
+  },
     /**
    * Fast health probe ping to check if broker is online
    */
@@ -40,9 +53,52 @@ export const BrokerApi = {
       if (data.tokens?.access_token) {
         state.deviceToken = data.tokens.access_token;
       }
+      if (data.tokens?.refresh_token) {
+        state.refreshToken = data.tokens.refresh_token;
+      }
       return { status: 'approved', data };
     }
     throw new Error(`Device registration failed with status ${res.status}`);
+  },
+  /**
+   * Refreshes the short-lived device JWT using refreshToken.
+   */
+  async refreshAuthToken() {
+    if (!state.refreshToken) return false;
+    try {
+      const res = await fetch(`${CONFIG.BROKER_BASE}/api/device/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: state.refreshToken })
+      });
+      if (!res.ok) return false;
+      const data = await res.json().catch(() => ({}));
+      const newTok = data.access_token || data.tokens?.access_token;
+      if (newTok) {
+        state.deviceToken = newTok;
+        if (data.refresh_token || data.tokens?.refresh_token) {
+          state.refreshToken = data.refresh_token || data.tokens?.refresh_token;
+        }
+        return true;
+      }
+    } catch (e) {
+      console.warn('Device JWT refresh failed:', e);
+    }
+    return false;
+  },
+  async _authedFetch(url, opts = {}) {
+    const buildOpts = () => {
+      const headers = { ...(opts.headers || {}) };
+      if (state.deviceToken) {
+        headers['Authorization'] = `Bearer ${state.deviceToken}`;
+      }
+      return { ...opts, headers };
+    };
+    let res = await fetch(url, buildOpts());
+    if (res.status === 401 && await this.refreshAuthToken()) {
+      res = await fetch(url, buildOpts());
+    }
+    return res;
   },
   /**
    * Queries broker configuration & profile summaries
@@ -56,6 +112,9 @@ export const BrokerApi = {
     if (!res.ok) throw new Error(`Config fetch failed: ${res.status}`);
     const conf = await res.json();
     state.deviceConfig = conf;
+    if (!conf.abs_configured && state.sourceFilter === 'abs') {
+      state.sourceFilter = 'all';
+    }
     if (conf.is_approved !== undefined) {
       state.isApproved = Boolean(conf.is_approved);
     }
@@ -80,6 +139,7 @@ export const BrokerApi = {
       if (conf.settings.bedtime !== undefined) state.parentSettings.bedtime = conf.settings.bedtime;
       if (conf.settings.wakeTime !== undefined) state.parentSettings.wakeTime = conf.settings.wakeTime;
       if (conf.settings.clockSize !== undefined) state.parentSettings.clockSize = conf.settings.clockSize;
+      if (conf.settings.keepAwake !== undefined) state.parentSettings.keepAwake = Boolean(conf.settings.keepAwake);
       if (conf.settings.blockRemotePlayback !== undefined) state.blockRemotePlayback = Boolean(conf.settings.blockRemotePlayback);
       changed = true;
     }
@@ -92,9 +152,11 @@ export const BrokerApi = {
         return {
           id: p.id,
           display_name: p.display_name,
-          avatar_url: p.avatar_url && p.avatar_url.startsWith('/') 
-            ? `${CONFIG.BROKER_BASE}${p.avatar_url}` 
-            : (p.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${p.id}`),
+          avatar_url: p.avatar_url && p.avatar_url.startsWith('/')
+            ? `${CONFIG.BROKER_BASE}${p.avatar_url}`
+            : (p.avatar_url || ''),
+          avatar_color: p.avatar_color || '#e5352b',
+          avatar_initial: p.avatar_initial || '',
           default_player_id: p.default_player_id || '',
           default_player_name: p.default_player_name || 'Yoto Player',
           players: players
@@ -139,38 +201,73 @@ export const BrokerApi = {
    * Fetches chapters / tracks breakdown for a specific card on demand
    */
   async fetchMediaTracks(mediaId) {
-    const headers = state.deviceToken ? { 'Authorization': `Bearer ${state.deviceToken}` } : {};
     try {
-      const res = await fetch(`${CONFIG.BROKER_BASE}/api/media/${encodeURIComponent(mediaId)}/tracks`, { headers });
+      const res = await this._authedFetch(`${CONFIG.BROKER_BASE}/api/media/${encodeURIComponent(mediaId)}/tracks`);
       if (!res.ok) return null;
       const data = await res.json();
-      return (data && data.tracks) ? data.tracks : [];
+      const tracks = (data && data.tracks) ? data.tracks : [];
+      if (tracks.length > 0) {
+        const chapters = tracks.map(t => ({
+          key: t.key || '',
+          track_key: t.track_key || t.key || '',
+          title: t.title,
+          duration: t.duration_seconds || 0,
+          icon_url: t.icon_url
+        }));
+        const duration = tracks.reduce((sum, t) => sum + (t.duration_seconds || 0), 0);
+        this._chaptersById.set(String(mediaId), { chapters, duration });
+      }
+      return tracks;
     } catch (e) {
       console.warn(`Failed to fetch tracks for ${mediaId}:`, e);
       return [];
     }
   },
-  async fetchLiveCatalog(profileId) {
-    const headers = state.deviceToken ? { 'Authorization': `Bearer ${state.deviceToken}` } : {};
-    const absPromise = fetch(`${CONFIG.BROKER_BASE}/api/kids/${profileId}/abs?client=kiosk`, { headers })
-      .then(r => r.ok ? r.json() : [])
-      .catch(() => []);
-    const yotoPromise = fetch(`${CONFIG.BROKER_BASE}/api/kids/${profileId}/yoto?client=kiosk`, { headers })
-      .then(r => r.ok ? r.json() : [])
-      .catch(() => []);
-    const [absItems, yotoItems] = await Promise.all([absPromise, yotoPromise]);
+  async fetchLiveCatalog(profileId = null, deviceId = null) {
+    const isStandalone = state.mode === 'standalone' || !profileId;
+    const targetKey = isStandalone ? '__all__' : encodeURIComponent(profileId);
+    const devParam = (deviceId || state.activeDevice?.id || '').trim();
+    const qs = devParam
+      ? `client=kiosk&device_id=${encodeURIComponent(devParam)}`
+      : 'client=kiosk';
+
+    let absItems = [];
+    let yotoItems = [];
+    const combinedRes = await this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/catalog?${qs}`)
+      .catch(() => null);
+    if (combinedRes && combinedRes.ok) {
+      const payload = await combinedRes.json().catch(() => ({}));
+      absItems = payload.abs || [];
+      yotoItems = payload.yoto || [];
+    } else {
+      const skipAbs = state.deviceConfig && state.deviceConfig.abs_configured === false;
+      const absPromise = skipAbs
+        ? Promise.resolve([])
+        : this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/abs?${qs}`)
+          .then(r => r.ok ? r.json() : [])
+          .catch(() => []);
+      const yotoPromise = this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/yoto?${qs}`)
+        .then(r => r.ok ? r.json() : [])
+        .catch(() => []);
+      [absItems, yotoItems] = await Promise.all([absPromise, yotoPromise]);
+    }
     const combined = [];
     (absItems || []).forEach(b => {
       const thumb = b.thumb || b.cover_url || b.cover;
       const coverUrl = thumb ? (thumb.startsWith('http') ? thumb : `${CONFIG.BROKER_BASE}${thumb}`) : null;
+      const cachedCh = this._chaptersById.get(String(b.id));
+      const mappedCh = (b.chapters || []).map(ch => ({ title: ch.title, duration: (ch.end && ch.start) ? (ch.end - ch.start) : (ch.duration || 0) }));
       combined.push({
         id: b.id,
         title: b.title,
         author: b.author,
         cover: coverUrl,
         is_highlight: !!b.is_highlight,
-        duration: b.duration,
-        chapters: (b.chapters || []).map(ch => ({ title: ch.title, duration: (ch.end && ch.start) ? (ch.end - ch.start) : (ch.duration || 0) })),
+        has_physical: !!b.has_physical,
+        last_played_at: b.last_played_at || '',
+        daily: !!b.daily,
+        duration: b.duration || (cachedCh ? cachedCh.duration : 0),
+        chapters: mappedCh.length ? mappedCh : (cachedCh ? cachedCh.chapters : []),
         source: 'abs',
         series: b.series || '',
         sequence: b.sequence != null ? b.sequence : null,
@@ -181,14 +278,21 @@ export const BrokerApi = {
     (yotoItems || []).forEach(y => {
       const thumb = y.thumb || y.cover_url || y.cover;
       const coverUrl = thumb ? (thumb.startsWith('http') ? thumb : `${CONFIG.BROKER_BASE}${thumb}`) : null;
+      const yid = y.card_id || y.id;
+      const cachedCh = this._chaptersById.get(String(yid));
+      const mappedCh = (y.chapters || []).map(ch => ({ title: ch.title, duration: ch.duration || 0 }));
       combined.push({
-        id: y.card_id || y.id,
+        id: yid,
         title: y.title,
         author: y.author || 'Yoto',
         cover: coverUrl,
         is_highlight: !!y.is_highlight,
-        duration: y.duration,
-        chapters: (y.chapters || []).map(ch => ({ title: ch.title, duration: ch.duration || 0 })),
+        is_myo: !!y.is_myo,
+        has_physical: !!y.has_physical,
+        last_played_at: y.last_played_at || '',
+        daily: !!y.daily,
+        duration: y.duration || (cachedCh ? cachedCh.duration : 0),
+        chapters: mappedCh.length ? mappedCh : (cachedCh ? cachedCh.chapters : []),
         source: 'yoto',
         series: y.series || '',
         sequence: y.sequence != null ? y.sequence : null,
@@ -197,17 +301,17 @@ export const BrokerApi = {
         series_list: y.series_list || (y.series ? [{ name: y.series, sequence: y.sequence, sequence_display: y.sequence_display }] : [])
       });
     });
-    // Highlights first, then alphabetical sort ignoring 'The', 'A', 'An'
-    combined.sort((a, b) => {
-      if (!!b.is_highlight !== !!a.is_highlight) {
-        return b.is_highlight ? 1 : -1;
-      }
-      const cleanA = (a.title || '').replace(/^(the|a|an)\s+/i, '').trim().toLowerCase();
-      const cleanB = (b.title || '').replace(/^(the|a|an)\s+/i, '').trim().toLowerCase();
-      return cleanA.localeCompare(cleanB);
-    });
-    state.catalog = combined;
-    return combined;
+    const sorted = (typeof window !== 'undefined' && window.StoryDeckSeries)
+      ? window.StoryDeckSeries.sortItems(combined, { sortBy: 'name', highlightsFirst: true })
+      : combined.sort((a, b) => {
+          if (!!b.is_highlight !== !!a.is_highlight) return b.is_highlight ? 1 : -1;
+          const cleanA = (a.title || '').replace(/^(the|a|an)\s+/i, '').trim().toLowerCase();
+          const cleanB = (b.title || '').replace(/^(the|a|an)\s+/i, '').trim().toLowerCase();
+          return cleanA.localeCompare(cleanB);
+        });
+    state.catalog = sorted;
+    this._catalogCache.set(this._catalogCacheKey(profileId, deviceId), sorted);
+    return sorted;
   },
   /**
    * Dispatches playback command to the broker /api/play endpoint.
@@ -235,9 +339,9 @@ export const BrokerApi = {
       if (chObj.track_key) payload.track_key = chObj.track_key;
     }
     try {
-      const res = await fetch(`${CONFIG.BROKER_BASE}/api/play`, {
+      const res = await this._authedFetch(`${CONFIG.BROKER_BASE}/api/play`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
@@ -292,9 +396,9 @@ export const BrokerApi = {
       ...payload
     };
     try {
-      const res = await fetch(`${CONFIG.BROKER_BASE}/api/player/control`, {
+      const res = await this._authedFetch(`${CONFIG.BROKER_BASE}/api/player/control`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
       const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));

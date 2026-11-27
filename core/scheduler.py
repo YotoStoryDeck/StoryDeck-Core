@@ -256,6 +256,14 @@ def perform_library_refresh() -> int:
     except Exception as e:
         logger.debug("Scheduled ABS user playback sync notice: %s", e)
 
+    try:
+        from core.bridge.offline import refresh_offline_series_slots
+        rolled = refresh_offline_series_slots()
+        if rolled > 0:
+            logger.info("Queued rolling refresh for %d offline series card(s) after book completion.", rolled)
+    except Exception as e:
+        logger.debug("Scheduled offline series refresh notice: %s", e)
+
     # Prune stale records that were deleted upstream in Yoto or Audiobookshelf
     pruned_count = 0
     if discovered_items:

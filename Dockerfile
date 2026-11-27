@@ -9,11 +9,13 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system dependencies if required for Pillow
+# Install system dependencies if required for Pillow, StoryDeck Bridge audio encoding & TZ support
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    ffmpeg \
     libjpeg62-turbo-dev \
     zlib1g-dev \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python requirements
@@ -32,5 +34,5 @@ EXPOSE 5055
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5055/health || exit 1
 
-# Run with Gunicorn using gevent/threads for concurrent thumbnail fetching
-CMD ["gunicorn", "--bind", "0.0.0.0:5055", "--workers", "2", "--threads", "4", "--timeout", "60", "app:app"]
+# Run with a single Gunicorn gthread process so in-memory MQTT, scheduler, and OAuth token locks stay consistent
+CMD ["gunicorn", "--bind", "0.0.0.0:5055", "--workers", "1", "--threads", "8", "--timeout", "60", "app:app"]

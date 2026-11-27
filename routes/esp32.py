@@ -1,6 +1,7 @@
 """
 ESP32 device client communication, health checks, profile catalog feeds, and playback dispatch.
 """
+import os
 import json
 import time
 import secrets
@@ -135,48 +136,70 @@ def _resolve_client_type() -> str:
     return "touch"
 
 
-@esp32_bp.route("/api/kids/<child_name>/abs", methods=["GET"])
-@require_device_jwt
-def get_child_abs(child_name: str):
-    """
-    Returns filtered Audiobookshelf books for the profile.
-    Scoped by profile account token, dedicated library ID, and/or tag filter.
-    """
-    client_type = _resolve_client_type()
+def _fetch_child_abs_items(child_name: str, client_type: str, device_id: str = ""):
+    if child_name.lower() in ("__all__", "all", "standalone"):
+        return database.get_catalog_items_for_device(device_id, media_type="abs")
     try:
         books = database.get_catalog_items_for_profile(child_name.lower(), "abs", client_type=client_type)
         if books or not clients.abs_client:
-            return jsonify(books)
+            return books
     except Exception as e:
         logger.warning("Error fetching cached ABS catalog for %s: %s; falling back to live query.", child_name, e)
     config = database.get_all_profiles()
     child_cfg = config.get(child_name.lower(), {})
-    books = clients.abs_client.get_items_for_profile(child_cfg) if clients.abs_client else []
-    return jsonify(books)
+    return clients.abs_client.get_items_for_profile(child_cfg) if clients.abs_client else []
 
 
-@esp32_bp.route("/api/kids/<child_name>/yoto", methods=["GET"])
-@require_device_jwt
-def get_child_yoto(child_name: str):
-    """Returns curated Yoto playlists/cards for the profile based on shared and profile rules."""
-    client_type = _resolve_client_type()
+def _fetch_child_yoto_items(child_name: str, client_type: str, device_id: str = ""):
+    if child_name.lower() in ("__all__", "all", "standalone"):
+        return database.get_catalog_items_for_device(device_id, media_type="yoto")
     try:
         playlists = database.get_catalog_items_for_profile(child_name.lower(), "yoto", client_type=client_type)
         if playlists or not clients.yoto_client:
-            return jsonify(playlists)
+            return playlists
     except Exception as e:
         logger.warning("Error fetching cached Yoto catalog for %s: %s; falling back to live query.", child_name, e)
     profiles = database.get_all_profiles()
     shared_cfg = database.get_shared_rules()
     profile_cfg = profiles.get(child_name.lower(), {})
-    playlists = []
     if clients.yoto_client:
-        playlists = clients.yoto_client.get_curated_playlists_for_profile(
+        return clients.yoto_client.get_curated_playlists_for_profile(
             profile_key=child_name.lower(),
             profile_cfg=profile_cfg,
             shared_cfg=shared_cfg
         )
-    return jsonify(playlists)
+    return []
+
+
+@esp32_bp.route("/api/kids/<child_name>/abs", methods=["GET"])
+@require_device_jwt
+def get_child_abs(child_name: str):
+    """
+    Returns filtered Audiobookshelf books for the profile (or player-scoped standalone catalog when child_name is '__all__').
+    Scoped by profile account token, dedicated library ID, and/or tag filter.
+    """
+    dev_id = (request.args.get("device_id") or "").strip()
+    return jsonify(_fetch_child_abs_items(child_name, _resolve_client_type(), dev_id))
+
+
+@esp32_bp.route("/api/kids/<child_name>/yoto", methods=["GET"])
+@require_device_jwt
+def get_child_yoto(child_name: str):
+    """Returns curated Yoto playlists/cards for the profile (or player-scoped standalone catalog when child_name is '__all__')."""
+    dev_id = (request.args.get("device_id") or "").strip()
+    return jsonify(_fetch_child_yoto_items(child_name, _resolve_client_type(), dev_id))
+
+
+@esp32_bp.route("/api/kids/<child_name>/catalog", methods=["GET"])
+@require_device_jwt
+def get_child_combined_catalog(child_name: str):
+    """Returns combined {'abs': [...], 'yoto': [...]} catalog in a single round-trip for Tablet Kiosks."""
+    dev_id = (request.args.get("device_id") or "").strip()
+    client_type = _resolve_client_type()
+    return jsonify({
+        "abs": _fetch_child_abs_items(child_name, client_type, dev_id),
+        "yoto": _fetch_child_yoto_items(child_name, client_type, dev_id),
+    })
 
 
 @esp32_bp.route("/api/media/<media_id>/tracks", methods=["GET"])
@@ -339,6 +362,18 @@ def get_device_config():
             "hide_physical": bool(pdata.get("hide_physical", False))
         })
     settings = database.get_system_settings()
+    creds = database.get_api_credentials()
+    abs_configured = bool(
+        str(creds.get("abs_base_url") or "").strip()
+        and (
+            str(creds.get("abs_api_key") or "").strip()
+            or any(str(p.get("abs_api_key") or "").strip() for p in all_profs.values())
+        )
+    )
+    yoto_configured = bool(
+        str(creds.get("yoto_client_id") or "").strip()
+        and str(creds.get("yoto_refresh_token") or "").strip()
+    )
     exclude_single = bool(settings.get("exclude_single_card_series", True))
     parent_pin = device.get("parent_pin", "") if device else ""
     lock_player = bool(device.get("lock_player", False)) if device else False
@@ -351,8 +386,11 @@ def get_device_config():
             dev_settings = {}
     can_switch = (len(profile_summaries) > 1) and not bool(assigned_prof)
     latest_rel = database.get_latest_firmware_release()
+    server_tz = (os.environ.get("TZ") or "").strip()
     return jsonify({
         "device_id": device_id or "unknown",
+        "server_timezone": server_tz,
+        "catalog_revision": database.get_catalog_revision(),
         "is_approved": is_approved,
         "assigned_profile": assigned_prof or "",
         "parent_pin": parent_pin,
@@ -361,6 +399,8 @@ def get_device_config():
         "settings": dev_settings,
         "allow_profile_switch": can_switch,
         "exclude_single_card_series": exclude_single,
+        "abs_configured": abs_configured,
+        "yoto_configured": yoto_configured,
         "ota": {
             "ota_status": (device.get("ota_status") or "idle") if device else "idle",
             "ota_progress": int(device.get("ota_progress") or 0) if device else 0,
@@ -500,7 +540,10 @@ def play_media():
         if not ok:
             return jsonify({"ok": False, "error": err_msg}), code
 
-        database.record_playback(media_id, child)
+        if child != "default" or not device_id:
+            database.record_playback(media_id, child)
+        if device_id:
+            database.record_playback(media_id, f"device:{device_id}")
         return jsonify({
             "ok": True,
             "status": "playing",
@@ -585,7 +628,10 @@ def play_media():
         if not ok:
             return jsonify({"ok": False, "error": err_msg}), code
 
-        database.record_playback(media_id, child)
+        if child != "default" or not device_id:
+            database.record_playback(media_id, child)
+        if device_id:
+            database.record_playback(media_id, f"device:{device_id}")
         return jsonify({
             "ok": True,
             "status": "playing",
@@ -609,8 +655,18 @@ def control_player():
     device_id = data.get("device_id")
     action = data.get("action")
     volume = data.get("volume")
+    minutes = data.get("minutes")
+    position = data.get("position")
+    speed = data.get("speed")
     if not device_id or not action:
         return jsonify({"ok": False, "error": "device_id and action are required"}), 400
     from core.player_service import dispatch_player_control
-    ok, resp_data, status_code = dispatch_player_control(device_id, action, volume=volume)
+    ok, resp_data, status_code = dispatch_player_control(
+        device_id,
+        action,
+        volume=volume,
+        minutes=minutes,
+        position=position,
+        speed=speed,
+    )
     return jsonify(resp_data), status_code

@@ -1,4 +1,5 @@
 import { state } from './state.js';
+import { Utils } from './config.js';
 import { BrokerApi } from './broker-api.js';
 import { ScreensaverScreen } from './screens/screensaver.js';
 
@@ -7,29 +8,19 @@ export const timersMixin = {
    * Returns true if current wall-clock time falls within the configured bedtime window.
    */
   isBedtimeNow() {
-    const bedtimeStr = state.parentSettings.bedtime || '19:00';
-    const wakeTimeStr = state.parentSettings.wakeTime || '07:00';
-    const [bH, bM] = bedtimeStr.split(':').map(Number);
-    const [wH, wM] = wakeTimeStr.split(':').map(Number);
-    const bMinutes = bH * 60 + bM;
-    const wMinutes = wH * 60 + wM;
-    const now = new Date();
-    const curMinutes = now.getHours() * 60 + now.getMinutes();
-    if (bMinutes > wMinutes) {
-      // Overnight schedule (e.g. 19:00 -> 07:00)
-      return (curMinutes >= bMinutes || curMinutes < wMinutes);
-    } else {
-      // Same-day schedule
-      return (curMinutes >= bMinutes && curMinutes < wMinutes);
-    }
+    return Utils.isBedtimeWindow(state.parentSettings.bedtime, state.parentSettings.wakeTime);
   },
   /**
    * Evaluates if sleep timer should arm or reset upon playback state change or setting modification.
    */
   checkAndArmSleepTimer(forceReset = false) {
     const mins = state.parentSettings.sleepTimerMin || 0;
+    const isAway = Boolean(state.activeDevice && state.activeDevice.is_home === false);
     if (mins <= 0) {
       state.sleepTimerRemainingSec = 0;
+      if (forceReset && !isAway && state.localSessionActive) {
+        BrokerApi.sendPlayerControl('sleep_timer', { minutes: 0 }).catch(() => {});
+      }
       return;
     }
     const mode = state.parentSettings.sleepTimerMode || 'bedtime';
@@ -43,9 +34,15 @@ export const timersMixin = {
       if (forceReset || state.sleepTimerRemainingSec <= 0) {
         state.sleepTimerRemainingSec = mins * 60;
         console.log(`[SleepTimer] Armed for ${mins} minutes (${state.sleepTimerRemainingSec}s)`);
+        if (!isAway && state.localSessionActive) {
+          BrokerApi.sendPlayerControl('sleep_timer', { minutes: mins }).catch(() => {});
+        }
       }
     } else if (!isPlaying && forceReset) {
       state.sleepTimerRemainingSec = 0;
+      if (!isAway && state.localSessionActive) {
+        BrokerApi.sendPlayerControl('sleep_timer', { minutes: 0 }).catch(() => {});
+      }
     }
   },
   /**
@@ -103,8 +100,8 @@ export const timersMixin = {
     this._sleepTicker = setInterval(() => {
       // Check inactivity for screensaver transition
       this.checkInactivity();
-      // If screensaver is actively displaying, update clock in-place (no full DOM wipe or flashing)
-      if (state.screen === 'screensaver') {
+      // If screensaver is actively displaying, update clock in-place (skip DOM work when hidden)
+      if (state.screen === 'screensaver' && (typeof document === 'undefined' || !document.hidden)) {
         if (!ScreensaverScreen.tick()) {
           this.render();
         }

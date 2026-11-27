@@ -40,12 +40,6 @@ window.addEventListener("storydeck:core-status", (e) => {
   }
 });
 
-// HTML escape helper
-function escapeHtml(str) {
-  if (!str) return "";
-  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
 // Global helper to populate ABS server tag dropdowns across views and modals
 function populateAbsServerTagsDropdowns() {
   const settingsSelect = document.getElementById("absServerTagsDropdown");
@@ -69,20 +63,6 @@ function populateAbsServerTagsDropdowns() {
       modalSelect.appendChild(opt);
     });
   }
-}
-
-// Toast notification helper
-function showToast(message, type = "info") {
-  const container = document.getElementById("toastContainer");
-  const toast = document.createElement("div");
-  toast.className = "toast";
-  toast.innerText = message;
-  container.appendChild(toast);
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transition = "opacity 0.3s";
-    setTimeout(() => toast.remove(), 300);
-  }, 3500);
 }
 
 // ============================================================================

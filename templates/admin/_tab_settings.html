@@ -167,6 +167,24 @@
             </div>
           </div>
 
+          <!-- Offline Series Card Layout Packing Setting -->
+          <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;">
+              <div style="max-width: 580px;">
+                <label for="offlineSeriesPackingSelect" style="display: block; font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Offline Series Card Layout</label>
+                <p class="text-secondary" style="font-size: 12px; margin: 0; line-height: 1.4;">
+                  <strong>Maintain Chapters</strong> keeps each book's original chapters intact, places as many whole books as fit up to 100 tracks, and automatically drops finished books to roll in the next ones. <strong>Condense Chapters into Parts</strong> merges neighboring chapters into longer parts to squeeze more books onto a card.
+                </p>
+              </div>
+              <div>
+                <select id="offlineSeriesPackingSelect" class="form-control" style="min-width: 260px; font-size: 13px;">
+                  <option value="chapters">📖 Maintain Chapters — Rolling Whole Books (≤ 100 Tracks, Default)</option>
+                  <option value="condense">🗜️ Condense Chapters into Parts (Maximum Books per Card)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
           <!-- Preferences Action Toolbar -->
           <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px;">
             <span class="unsaved-badge" id="unsaved-preferences" style="display: none;"><span class="unsaved-dot"></span> Unsaved Changes</span>

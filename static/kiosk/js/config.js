@@ -74,23 +74,75 @@ export const CONFIG = {
 /**
  * Global Utility Functions
  */
-export const Utils = {
-  esc: (s) => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;'
-  }[c])),
+const _ui = (typeof window !== "undefined" && window.StoryDeckUI) ? window.StoryDeckUI : null;
 
-  mmss: (s) => {
-    s = Math.max(0, Math.round(s || 0));
-    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+export const Utils = {
+  esc: (s) => _ui
+    ? _ui.escapeHtml(s)
+    : (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;'
+      }[c])),
+
+  mmss: (s) => _ui
+    ? _ui.formatSeconds(s)
+    : (() => {
+        s = Math.max(0, Math.round(s || 0));
+        return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      })(),
+
+  longdur: (s) => _ui
+    ? _ui.formatDuration(s)
+    : (() => {
+        s = Math.round(s || 0);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        return h ? `${h}h ${m}m` : `${m}m`;
+      })(),
+
+  getClockParts: (now = new Date(), timeZone = null) => {
+    const tz = String(timeZone || '').trim();
+    const dateOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
+    if (tz && !['utc', 'etc/utc', 'gmt'].includes(tz.toLowerCase())) {
+      try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit',
+        }).formatToParts(now);
+        const hPart = parts.find((p) => p.type === 'hour')?.value;
+        const mPart = parts.find((p) => p.type === 'minute')?.value;
+        if (hPart !== undefined && mPart !== undefined) {
+          return {
+            hours: Number(hPart) % 24,
+            minutes: Number(mPart),
+            dateStr: now.toLocaleDateString('en-US', { ...dateOptions, timeZone: tz }),
+          };
+        }
+      } catch {
+        // Invalid/unsupported IANA timezone -> fall back to tablet's local clock
+      }
+    }
+    return {
+      hours: now.getHours(),
+      minutes: now.getMinutes(),
+      dateStr: now.toLocaleDateString('en-US', dateOptions),
+    };
   },
 
-  longdur: (s) => {
-    s = Math.round(s || 0);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    return h ? `${h}h ${m}m` : `${m}m`;
+  isBedtimeWindow: (bedtime = '19:00', wakeTime = '07:00', now = new Date(), timeZone = null) => {
+    const [bH, bM] = (bedtime || '19:00').split(':').map(Number);
+    const [wH, wM] = (wakeTime || '07:00').split(':').map(Number);
+    const nightT = bH * 60 + bM;
+    const wakeT = wH * 60 + wM;
+    const { hours, minutes } = Utils.getClockParts(now, timeZone);
+    const nowM = hours * 60 + minutes;
+    if (nightT > wakeT) {
+      return (nowM >= nightT || nowM < wakeT);
+    }
+    return (nowM >= nightT && nowM < wakeT);
   }
 };

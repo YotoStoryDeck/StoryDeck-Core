@@ -1,0 +1,26 @@
+        <!-- ===================================================================== -->
+        <!-- TAB 3: CARDS (PHYSICAL INVENTORY)                                     -->
+        <!-- ===================================================================== -->
+        <section id="tabCards" class="tab-view">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <h3 style="font-size: 15px; margin: 0;">💳 Physical Cards Inventory</h3>
+            <button class="btn btn-primary btn-sm" onclick="openPairCardModal()">🔗 Pair Physical Card</button>
+          </div>
+          <p class="text-secondary" style="font-size: 11px; margin-top: 4px; margin-bottom: 12px;">
+            Manage physical NFC Make-Your-Own cards and dedicated profile cards.
+          </p>
+
+          <!-- Section A: Profile & User Dedicated Cards -->
+          <h4 style="font-size: 12px; color: var(--accent-abs); text-transform: uppercase; margin-bottom: 6px;">👤
+            Profile &amp; Personal Dedicated Cards</h4>
+          <div id="profileCardsList" class="item-list" style="margin-bottom: 20px;">
+            <!-- Populated via JS -->
+          </div>
+
+          <!-- Section B: Fleet / Multi-Use Cards -->
+          <h4 style="font-size: 12px; color: var(--accent-info); text-transform: uppercase; margin-bottom: 6px;">🏷️
+            Fleet &amp; Multi-Use Cards</h4>
+          <div id="fleetCardsList" class="item-list">
+            <!-- Populated via JS -->
+          </div>
+        </section>

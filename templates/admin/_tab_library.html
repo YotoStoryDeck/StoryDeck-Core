@@ -43,9 +43,15 @@
           </select>
 
           <!-- Series / Group Filter -->
-          <select id="curationSeriesFilter" class="form-control" style="width: auto; min-width: 170px;" onchange="filterMatrix()">
+          <select id="curationSeriesFilter" class="form-control" style="width: auto; min-width: 170px;" onchange="onCurationSortOrSeriesChange()">
             <option value="all">All Series / Groups</option>
             <!-- Dynamic series options populated via JS -->
+          </select>
+
+          <!-- Sort Selector -->
+          <select id="curationSortSelect" class="form-control" style="width: auto; min-width: 150px;" onchange="onCurationSortOrSeriesChange()" title="Sort Catalog">
+            <option value="name">🔤 Sort: Name (A–Z)</option>
+            <option value="series_order">📚 Sort: Series Order</option>
           </select>
 
           <!-- Physical Card Ownership Filter -->

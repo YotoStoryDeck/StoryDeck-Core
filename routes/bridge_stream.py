@@ -12,7 +12,7 @@ import database
 import clients
 from core.config import CUSTOM_ICONS_DIR
 from core.version_service import get_installed_version
-from core.bridge.icons import render_track_icon_png
+from core.bridge.icons import render_track_icon_png, resolve_source_chapter_idx
 from core.bridge.manager import get_bridge_manager
 from core.bridge.streamer import AudioStreamer, AudioTrackSource
 from core.bridge.playback import get_playback_manager
@@ -228,5 +228,19 @@ def serve_track_icon(slot_id: str, track_idx: int = 1):
         if b_dur > 0:
             fraction = min(1.0, max(0.0, float(track.get("start_time") or 0.0) / b_dur))
 
-    png_bytes = render_track_icon_png(abs_item_id, track_idx=track_idx, fraction=fraction)
+    chapter_idx = None
+    if track and abs_item_id and clients.abs_client and track.get("start_time") is not None:
+        try:
+            item_data = clients.abs_client.get_item(abs_item_id)
+            if isinstance(item_data, dict) and isinstance(item_data.get("media"), dict):
+                chapters = item_data["media"].get("chapters") or []
+                chapter_idx = resolve_source_chapter_idx(
+                    chapters,
+                    float(track.get("start_time") or 0.0),
+                    float(track.get("end_time")) if track.get("end_time") is not None else None,
+                )
+        except Exception as e:
+            logger.debug("Stream icon chapter resolution notice for %s/%d: %s", slot_id, track_idx, e)
+
+    png_bytes = render_track_icon_png(abs_item_id, track_idx=track_idx, fraction=fraction, chapter_idx=chapter_idx)
     return Response(png_bytes, mimetype="image/png", headers={"Cache-Control": "max-age=3600"})
