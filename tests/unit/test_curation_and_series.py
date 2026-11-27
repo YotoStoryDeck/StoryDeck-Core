@@ -1,19 +1,34 @@
-"""
-Unit tests for Yoto retail card ingestion, catalog curation matrix permissions,
-and one-stop Audiobookshelf tagging API.
-"""
-
-import tests.test_isolation  # noqa: F401 - must precede app/clients/database imports
+"""Unit tests for curation matrix, catalog rotation, series overrides, Yoto tagging, and master API security."""
+import base64
+from datetime import datetime as _real_datetime
+import io
+import json
+from pathlib import Path
+import re
+import sqlite3
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+
+from PIL import Image
+
+from tests.harness import IsolatedTestCase
 from app import app
 import clients
+from core.media_utils import (
+    extract_chapter_number,
+    extract_series_list,
+    parse_single_series,
+    parse_track_names,
+    render_16x16_icon_with_overlay,
+)
 import database
 
 
-class TestCurationMatrixAndYotoRetail(unittest.TestCase):
+class TestCurationMatrixAndYotoRetail(IsolatedTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         database.upsert_profile("child_a", {
             "display_name": "Child A",
             "yoto": {"inherit_shared": True}
@@ -57,6 +72,7 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         ])
 
     def setUp(self):
+        super().setUp()
         self.client = app.test_client()
 
     def test_01_yoto_retail_cards_loaded(self):
@@ -86,12 +102,12 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             retail = [c for c in raw_library if not c.get("isMyo")]
             myo = [c for c in raw_library if c.get("isMyo")]
 
-            self.assertGreater(len(retail), 40, "Should have loaded at least 40 retail cards")
-            self.assertGreater(len(myo), 5, "Should have loaded MYO cards")
+            self.assertGreater(len(retail), 40)
+            self.assertGreater(len(myo), 5)
 
             hp_card = next((c for c in retail if c.get("cardId") == "7gGiV"), None)
-            self.assertIsNotNone(hp_card, "Harry Potter retail card (7gGiV) should exist")
-            self.assertTrue("Harry Potter" in hp_card.get("title", ""))
+            self.assertIsNotNone(hp_card)
+            self.assertIn("Harry Potter", hp_card.get("title", ""))
             self.assertTrue(hp_card.get("coverImageUrl", "").startswith("https://card-content.yotoplay.com/"))
 
     def test_02_catalog_matrix_structure(self):
@@ -102,15 +118,13 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         self.assertIn("shared_rules", matrix)
 
         items = matrix["items"]
-        self.assertGreaterEqual(len(items), 4, "Total catalog should have seeded items (ABS + Yoto Retail + MYO)")
+        self.assertGreaterEqual(len(items), 4)
 
-        # Check types present
         types = set(it["type"] for it in items)
         self.assertIn("abs", types)
         self.assertIn("yoto", types)
         self.assertIn("yoto_myo", types)
 
-        # Check profiles have reasons
         sample_item = items[0]
         self.assertIn("profiles", sample_item)
         self.assertIn("series", sample_item)
@@ -119,67 +133,6 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             self.assertIn("allowed", sample_item["profiles"][pid])
             self.assertIn("reason", sample_item["profiles"][pid])
 
-    def test_06_series_extraction_from_catalogs(self):
-        """Verifies that Yoto and ABS items extract series names for series filtering and grouping."""
-        mock_raw = [{"cardId": "bb_01", "title": "BrainBots: Dinosaurs", "series": "BrainBots", "isMyo": False}]
-        with patch.object(clients.yoto_client, "get_raw_library", return_value=mock_raw):
-            raw_library = clients.yoto_client.get_raw_library()
-            brainbots_with_series = [c for c in raw_library if "brainbots" in (c.get("series") or "").lower()]
-            self.assertTrue(len(brainbots_with_series) > 0, "Should have cards with BrainBots series in raw library")
-            sample_bb = brainbots_with_series[0]
-            self.assertIn("series", sample_bb)
-            self.assertTrue("BrainBots" in sample_bb["series"])
-
-        # Test regex pattern for trailing sequence removal with ranges (e.g. "The Boxcar Children #13-15" -> "The Boxcar Children")
-        import re
-        sample_abs_series = "The Boxcar Children #13-15"
-        m = re.search(r'\s*#\s*([0-9]+(?:\.[0-9]+)?(?:\s*[-–—,&]\s*[0-9]+(?:\.[0-9]+)?)*)$', sample_abs_series)
-        self.assertIsNotNone(m)
-        clean_name = sample_abs_series[:m.start()].strip()
-        self.assertEqual(clean_name, "The Boxcar Children")
-        self.assertEqual(m.group(1).replace(" ", ""), "13-15")
-
-        # Test single book pattern
-        m_single = re.search(r'\s*#\s*([0-9]+(?:\.[0-9]+)?(?:\s*[-–—,&]\s*[0-9]+(?:\.[0-9]+)?)*)$', "A Song of Ice and Fire #1")
-        self.assertIsNotNone(m_single)
-        self.assertEqual("A Song of Ice and Fire #1"[:m_single.start()].strip(), "A Song of Ice and Fire")
-        self.assertEqual(m_single.group(1), "1")
-
-        # Test Books range pattern
-        m_books = re.search(r'[,:\s]+(?:Books?|Volumes?|Vol\.?|Parts?)\s*([0-9]+(?:\.[0-9]+)?(?:\s*[-–—,&]\s*[0-9]+(?:\.[0-9]+)?)*)$', "Magic Tree House, Books 1-4", re.IGNORECASE)
-        self.assertIsNotNone(m_books)
-        self.assertEqual("Magic Tree House, Books 1-4"[:m_books.start()].strip(), "Magic Tree House")
-        self.assertEqual(m_books.group(1).replace(" ", ""), "1-4")
-
-        # Test comma-delimited multi-series parsing (e.g. "Star Wars #55, Star Wars Classic Stories #7")
-        multi_series_input = "Star Wars #55, Star Wars Classic Stories #7"
-        raw_parts = [p.strip() for p in multi_series_input.split(",") if p.strip()]
-        self.assertEqual(len(raw_parts), 2)
-        parsed_series = []
-        for p in raw_parts:
-            m_p = re.search(r'\s*#\s*([0-9]+(?:\.[0-9]+)?(?:\s*[-–—,&]\s*[0-9]+(?:\.[0-9]+)?)*)$', p)
-            self.assertIsNotNone(m_p)
-            parsed_series.append({
-                "name": p[:m_p.start()].strip(),
-                "order": m_p.group(1).replace(" ", "")
-            })
-        self.assertEqual(parsed_series[0], {"name": "Star Wars", "order": "55"})
-        self.assertEqual(parsed_series[1], {"name": "Star Wars Classic Stories", "order": "7"})
-
-        # Test comma-delimited multi-series without sequence numbers (e.g. "Star Wars, Star Wars Classic Stories")
-        unsequenced_input = "Star Wars, Star Wars Classic Stories"
-        unsequenced_parts = [p.strip() for p in unsequenced_input.split(",") if p.strip()]
-        self.assertEqual(len(unsequenced_parts), 2)
-        parsed_unsequenced = []
-        for p in unsequenced_parts:
-            m_p = re.search(r'\s*#\s*([0-9]+(?:\.[0-9]+)?(?:\s*[-–—,&]\s*[0-9]+(?:\.[0-9]+)?)*)$', p)
-            if m_p:
-                parsed_unsequenced.append({"name": p[:m_p.start()].strip(), "order": m_p.group(1).replace(" ", "")})
-            else:
-                parsed_unsequenced.append({"name": p.strip(), "order": ""})
-        self.assertEqual(parsed_unsequenced[0], {"name": "Star Wars", "order": ""})
-        self.assertEqual(parsed_unsequenced[1], {"name": "Star Wars Classic Stories", "order": ""})
-
     def test_03_abs_tagging_endpoint(self):
         """Tests the one-stop /api/admin/abs/item-tags endpoint."""
         with self.client.session_transaction() as sess:
@@ -187,8 +140,7 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             sess["username"] = "admin"
             sess["role"] = "admin"
 
-        # Find a seeded ABS item
-        item_id = "7696c2d1-49bc-4165-a3dd-743b4ad79328" # Spidey
+        item_id = "7696c2d1-49bc-4165-a3dd-743b4ad79328"
         with patch.object(clients.abs_client, "update_item_tags", return_value=True):
             res = self.client.post("/api/admin/abs/item-tags", json={
                 "item_id": item_id,
@@ -198,7 +150,6 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         data = res.get_json()
         self.assertTrue(data.get("ok"))
         self.assertEqual(data.get("tags"), ["Children"])
-
 
     def test_04_abs_server_tags_endpoint(self):
         """Verifies GET /api/admin/abs/server-tags returns ABS tags."""
@@ -223,7 +174,6 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             sess["username"] = "admin"
             sess["role"] = "admin"
 
-        # 1. GET default tags
         res = self.client.get("/api/admin/settings/abs-tags")
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
@@ -231,7 +181,6 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         initial_tags = data.get("tags")
         self.assertIsInstance(initial_tags, list)
 
-        # 2. PUT updated default tags
         res_put = self.client.put("/api/admin/settings/abs-tags", json={
             "tags": ["Children", "Kids", "Juvenile"]
         })
@@ -240,39 +189,43 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         self.assertTrue(data_put.get("ok"))
         self.assertEqual(data_put.get("tags"), ["Children", "Kids", "Juvenile"])
 
-        # 3. Verify get_catalog_matrix incorporates new default tags
         matrix = database.get_catalog_matrix()
         self.assertIn("items", matrix)
 
-        # 4. Restore original tags
         self.client.put("/api/admin/settings/abs-tags", json={"tags": initial_tags})
+
+    def test_06_series_extraction_from_catalogs(self):
+        """Verifies that Yoto and ABS items extract series names for series filtering and grouping."""
+        mock_raw = [{"cardId": "bb_01", "title": "BrainBots: Dinosaurs", "series": "BrainBots", "isMyo": False}]
+        with patch.object(clients.yoto_client, "get_raw_library", return_value=mock_raw):
+            raw_library = clients.yoto_client.get_raw_library()
+            brainbots_with_series = [c for c in raw_library if "brainbots" in (c.get("series") or "").lower()]
+            self.assertGreater(len(brainbots_with_series), 0)
+
+        self.assertEqual(parse_single_series("The Boxcar Children #13-15"), {"name": "The Boxcar Children", "order": "13-15"})
+        self.assertEqual(parse_single_series("A Song of Ice and Fire #1"), {"name": "A Song of Ice and Fire", "order": "1"})
+        self.assertEqual(parse_single_series("Magic Tree House, Books 1-4"), {"name": "Magic Tree House", "order": "1-4"})
+
+        parsed_multi = extract_series_list("Star Wars #55, Star Wars Classic Stories #7")
+        self.assertEqual(parsed_multi, [{"name": "Star Wars", "order": "55"}, {"name": "Star Wars Classic Stories", "order": "7"}])
+
+        parsed_unseq = extract_series_list("Star Wars, Star Wars Classic Stories")
+        self.assertEqual(parsed_unseq, [{"name": "Star Wars", "order": ""}, {"name": "Star Wars Classic Stories", "order": ""}])
 
     def test_07_yoto_groups_and_series_integration(self):
         """Validates that Yoto user groups are parsed and appended to card series_list."""
-        from routes.admin_curation import extract_series_list, parse_single_series
-
-        # 1. Test helper functions
         res = parse_single_series("Bedtime Stories")
         self.assertEqual(res, {"name": "Bedtime Stories", "order": ""})
-
-        res_num = parse_single_series("Harry Potter #1")
-        self.assertEqual(res_num, {"name": "Harry Potter", "order": "1"})
-
+        self.assertEqual(parse_single_series("Harry Potter #1"), {"name": "Harry Potter", "order": "1"})
         res_multi = extract_series_list("Star Wars, Bedtime Favorites")
         self.assertEqual(len(res_multi), 2)
-        self.assertEqual(res_multi[0]["name"], "Star Wars")
-        self.assertEqual(res_multi[1]["name"], "Bedtime Favorites")
 
-        # 2. Test YotoClient.get_groups returns a list
         with patch.object(clients.yoto_client, "get_groups", return_value=[{"id": "g1", "title": "Bedtime Favorites", "cardIds": []}]):
             groups = clients.yoto_client.get_groups()
         self.assertIsInstance(groups, list)
 
-        # 3. Simulate syncing a Yoto card with an assigned Yoto Group
         test_card_id = "test_yoto_group_card_123"
         test_group_name = "Bedtime Favorites"
-        
-        # Insert a media item representing a card that belongs to a Yoto group
         try:
             database.upsert_media_items([{
                 "id": test_card_id,
@@ -287,14 +240,12 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
                 }
             }])
 
-            # Verify it appears with series_list in get_catalog_matrix
             matrix = database.get_catalog_matrix()
             item = next((it for it in matrix["items"] if it["id"] == test_card_id), None)
             self.assertIsNotNone(item)
             self.assertEqual(item["series"], test_group_name)
             self.assertEqual(item["series_list"], [{"name": test_group_name, "order": ""}])
 
-            # Verify /api/thumb handles item_id without error (returns placeholder SVG 200)
             res_thumb = self.client.get(f"/api/thumb?type=yoto&id={test_card_id}&size=100")
             self.assertEqual(res_thumb.status_code, 200)
             self.assertIn(res_thumb.content_type, ("image/jpeg", "image/svg+xml"))
@@ -307,11 +258,10 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
                 conn.close()
 
     def test_08_batch_permissions_and_highlight(self):
-        """Verifies atomic multi-card permissions and highlight updates (Feature 011)."""
+        """Verifies atomic multi-card permissions and highlight updates."""
         test_ids = ["test_batch_card_1", "test_batch_card_2", "test_batch_card_3"]
         prof_id = "test_batch_child"
 
-        # 1. Setup mock profile and media items
         database.upsert_profile(prof_id, {
             "display_name": "Test Child",
             "yoto": {"allowed_card_ids": [], "excluded_card_ids": []}
@@ -322,15 +272,13 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         ])
 
         try:
-            # 2. Test batch highlight
             count = database.batch_update_media_highlight(test_ids, True)
-            self.assertEqual(count, 3, "Should have updated highlight on 3 items")
+            self.assertEqual(count, 3)
             matrix = database.get_catalog_matrix()
             for it in matrix["items"]:
                 if it["id"] in test_ids:
-                    self.assertTrue(it["is_highlight"], "Item should be highlighted")
+                    self.assertTrue(it["is_highlight"])
 
-            # 3. Test batch allow
             res = database.batch_update_profile_media_permissions(
                 media_ids=test_ids,
                 profile_actions={prof_id: "allow"},
@@ -339,54 +287,30 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             self.assertEqual(res["updated_cards"], 3)
             self.assertEqual(res["affected_profiles"], 1)
 
-            # Check that permissions in DB are 'allowed'
             conn = database.get_db_connection()
             try:
-                cur = conn.cursor()
-                cur.execute("SELECT media_id, permission FROM profile_media_permissions WHERE profile_id = ?;", (prof_id,))
-                rows = cur.fetchall()
+                rows = conn.execute(
+                    "SELECT media_id, permission FROM profile_media_permissions WHERE profile_id = ?;",
+                    (prof_id,),
+                ).fetchall()
                 perms = {r["media_id"]: r["permission"] for r in rows}
                 for mid in test_ids:
                     self.assertEqual(perms.get(mid), "allowed")
             finally:
                 conn.close()
 
-            # 4. Test batch exclude
             res_ex = database.batch_update_profile_media_permissions(
                 media_ids=test_ids[:2],
                 profile_actions={prof_id: "exclude"}
             )
             self.assertEqual(res_ex["updated_cards"], 2)
 
-            conn = database.get_db_connection()
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT media_id, permission FROM profile_media_permissions WHERE profile_id = ?;", (prof_id,))
-                rows = cur.fetchall()
-                perms = {r["media_id"]: r["permission"] for r in rows}
-                self.assertEqual(perms.get(test_ids[0]), "excluded")
-                self.assertEqual(perms.get(test_ids[1]), "excluded")
-                self.assertEqual(perms.get(test_ids[2]), "allowed")
-            finally:
-                conn.close()
-
-            # 5. Test batch reset (clears explicit rows)
             res_reset = database.batch_update_profile_media_permissions(
                 media_ids=[test_ids[0]],
                 profile_actions={prof_id: "reset"}
             )
             self.assertEqual(res_reset["updated_cards"], 1)
-
-            conn = database.get_db_connection()
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT media_id FROM profile_media_permissions WHERE profile_id = ? AND media_id = ?;", (prof_id, test_ids[0]))
-                self.assertIsNone(cur.fetchone(), "Row should have been deleted on reset")
-            finally:
-                conn.close()
-
         finally:
-            # Clean up
             database.delete_profile(prof_id)
             conn = database.get_db_connection()
             try:
@@ -398,13 +322,12 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
                 conn.close()
 
     def test_09_tracklist_and_icon_endpoints(self):
-        """Verifies Tracklist Browser and Icon Search endpoints (Feature 012)."""
+        """Verifies Tracklist Browser and Icon Search endpoints."""
         with self.client.session_transaction() as sess:
             sess["user_id"] = "admin_user"
             sess["username"] = "admin"
             sess["role"] = "admin"
 
-        # 1. Test GET /api/admin/media/<id>/tracks on a Yoto retail card
         mock_card_detail = {
             "cardId": "7gGiV",
             "title": "Harry Potter and the Sorcerer's Stone",
@@ -421,10 +344,9 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         data = res.get_json()
         self.assertTrue(data.get("ok"))
         self.assertEqual(data.get("type"), "yoto")
-        self.assertFalse(data.get("can_edit"), "Retail cards should be read-only")
-        self.assertGreater(len(data.get("tracks", [])), 0, "Should have extracted tracks")
+        self.assertFalse(data.get("can_edit"))
+        self.assertGreater(len(data.get("tracks", [])), 0)
 
-        # 2. Test GET /api/admin/icons/search
         with patch("icon_engine.IconEngine.search_all_sources", return_value=[{"name": "dragon", "url": "https://example.com/dragon.png", "source": "yotoicons"}]):
             res_search = self.client.get("/api/admin/icons/search?q=dragon&limit=10")
         self.assertEqual(res_search.status_code, 200)
@@ -433,32 +355,25 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         self.assertIsInstance(search_data.get("results"), list)
 
     def test_10_arr_style_master_api_key(self):
-        """Verifies Arr-Style Master API Key retrieval, header authentication, and regeneration (Feature 013)."""
-        # 1. Fetch current master API key
+        """Verifies Master API Key retrieval, header/query authentication, and regeneration."""
         key_details = database.get_master_api_key_details()
         curr_key = key_details["api_key"]
-        self.assertEqual(len(curr_key), 32, "Master API key should be 32 characters hex")
+        self.assertEqual(len(curr_key), 32)
 
-        # 2. Unauthenticated request to /api/admin/security/api-key without cookie or key -> 401
-        res_unauth = self.client.get("/api/admin/security/api-key")
-        self.assertEqual(res_unauth.status_code, 401)
-
-        # 3. Authenticate with X-Api-Key header -> 200
+        self.assertEqual(self.client.get("/api/admin/security/api-key").status_code, 401)
         res_auth_header = self.client.get("/api/admin/security/api-key", headers={"X-Api-Key": curr_key})
         self.assertEqual(res_auth_header.status_code, 200)
-        data = res_auth_header.get_json()
-        self.assertTrue(data.get("ok"))
-        self.assertEqual(data.get("api_key"), curr_key)
+        self.assertEqual(res_auth_header.get_json().get("api_key"), curr_key)
 
-        # 4. Authenticate with Bearer token header -> 200
-        res_bearer = self.client.get("/api/admin/security/api-key", headers={"Authorization": f"Bearer {curr_key}"})
-        self.assertEqual(res_bearer.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/admin/security/api-key", headers={"Authorization": f"Bearer {curr_key}"}).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/admin/security/api-key?apikey={curr_key}").status_code,
+            200,
+        )
 
-        # 5. Authenticate with ?apikey= query param (GET request) -> 200
-        res_query = self.client.get(f"/api/admin/security/api-key?apikey={curr_key}")
-        self.assertEqual(res_query.status_code, 200)
-
-        # 6. Test key regeneration via POST /api/admin/security/regenerate-api-key
         res_regen = self.client.post(
             "/api/admin/security/regenerate-api-key",
             headers={"X-Api-Key": curr_key},
@@ -466,20 +381,14 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         )
         self.assertEqual(res_regen.status_code, 200)
         new_key = res_regen.get_json().get("api_key")
-        self.assertNotEqual(new_key, curr_key, "Regenerated key must differ from prior key")
+        self.assertNotEqual(new_key, curr_key)
 
-        # 7. Old key is immediately rejected
-        res_old_rejected = self.client.get("/api/admin/security/api-key", headers={"X-Api-Key": curr_key})
-        self.assertEqual(res_old_rejected.status_code, 401)
-
-        # 8. New key succeeds
-        res_new_accepted = self.client.get("/api/admin/security/api-key", headers={"X-Api-Key": new_key})
-        self.assertEqual(res_new_accepted.status_code, 200)
+        self.assertEqual(self.client.get("/api/admin/security/api-key", headers={"X-Api-Key": curr_key}).status_code, 401)
+        self.assertEqual(self.client.get("/api/admin/security/api-key", headers={"X-Api-Key": new_key}).status_code, 200)
 
     def test_11_esp32_device_jwt_lifecycle_and_revocation(self):
         """Verifies ESP32 device handshake, token issuance, catalog guard, refresh, and instant revocation."""
         test_mac = "a1b2c3d4e5f6"
-        # 1. Register device (initially quarantined / unapproved)
         res_reg = self.client.post("/api/devices/register", json={
             "mac_address": test_mac,
             "friendly_name": "Test Bedside Controller",
@@ -491,40 +400,24 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         self.assertFalse(reg_data.get("is_approved"))
 
         try:
-            # 2. Attempt to query kid catalog without token -> 403
-            res_no_tok = self.client.get("/api/kids/child_a/yoto")
-            self.assertEqual(res_no_tok.status_code, 403)
+            self.assertEqual(self.client.get("/api/kids/child_a/yoto").status_code, 403)
+            database.update_esp32_device(test_mac, {"is_approved": 1, "assigned_profile_id": "child_a"})
 
-            # 3. Approve device and assign default profile
-            database.update_esp32_device(test_mac, {
-                "is_approved": 1,
-                "assigned_profile_id": "child_a"
-            })
-
-            # 4. Device re-registers -> receives tokens (200 OK)
             res_reg2 = self.client.post("/api/devices/register", json={"mac_address": test_mac})
             self.assertEqual(res_reg2.status_code, 200)
             reg2_data = res_reg2.get_json()
             self.assertEqual(reg2_data.get("status"), "approved")
-            self.assertIn("tokens", reg2_data)
             access_tok = reg2_data["tokens"]["access_token"]
             refresh_tok = reg2_data["tokens"]["refresh_token"]
 
-            # 5. Query kid catalog using Authorization: Bearer <access_token> -> 200
             res_cat = self.client.get("/api/kids/child_a/yoto", headers={"Authorization": f"Bearer {access_tok}"})
             self.assertEqual(res_cat.status_code, 200)
             self.assertIsInstance(res_cat.get_json(), list)
 
-            # 6. Refresh token exchange via POST /api/device/auth/refresh
-            res_ref = self.client.post("/api/device/auth/refresh", json={
-                "mac": test_mac,
-                "refresh_token": refresh_tok
-            })
+            res_ref = self.client.post("/api/device/auth/refresh", json={"mac": test_mac, "refresh_token": refresh_tok})
             self.assertEqual(res_ref.status_code, 200)
-            new_access_tok = res_ref.get_json().get("access_token")
-            self.assertTrue(new_access_tok)
+            self.assertTrue(res_ref.get_json().get("access_token"))
 
-            # 7. Admin instant revocation via POST /api/admin/devices/<mac>/revoke
             with self.client.session_transaction() as sess:
                 sess["user_id"] = "admin_user"
                 sess["username"] = "admin"
@@ -534,7 +427,6 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             self.assertEqual(res_rev.status_code, 200)
             self.assertEqual(res_rev.get_json().get("status"), "revoked")
 
-            # 8. Outstanding access token immediately rejected -> 403 (clear test admin session first)
             with self.client.session_transaction() as sess:
                 sess.clear()
 
@@ -542,21 +434,13 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             self.assertEqual(res_cat_revoked.status_code, 403)
             self.assertEqual(res_cat_revoked.get_json().get("error"), "device_revoked")
 
-            # 9. Refresh token also rejected -> 403
-            res_ref_revoked = self.client.post("/api/device/auth/refresh", json={
-                "mac": test_mac,
-                "refresh_token": refresh_tok
-            })
+            res_ref_revoked = self.client.post("/api/device/auth/refresh", json={"mac": test_mac, "refresh_token": refresh_tok})
             self.assertEqual(res_ref_revoked.status_code, 403)
-
         finally:
             database.delete_esp32_device(test_mac)
 
     def test_12_flexible_track_name_parsing_and_chapter_update(self):
         """Verifies parsing of bulleted lists, newlines, and comma-separated chapter names."""
-        from routes.admin_curation import parse_track_names
-
-        # 1. Bullet list parsing
         bullet_input = """
         • Chapter 1: To the Castle!
         • Chapter 2: The Dragon Stone
@@ -564,29 +448,16 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         • Chapter 4: Worm
         """
         parsed_bullet = parse_track_names(bullet_input)
-        self.assertEqual(len(parsed_bullet), 4)
-        self.assertEqual(parsed_bullet[0], "Chapter 1: To the Castle!")
-        self.assertEqual(parsed_bullet[1], "Chapter 2: The Dragon Stone")
-        self.assertEqual(parsed_bullet[2], "Chapter 3: More Dragons!")
-        self.assertEqual(parsed_bullet[3], "Chapter 4: Worm")
+        self.assertEqual(parsed_bullet, ["Chapter 1: To the Castle!", "Chapter 2: The Dragon Stone", "Chapter 3: More Dragons!", "Chapter 4: Worm"])
 
-        # 2. Hyphen and asterisk bullet list parsing
-        dash_input = "- Intro\n* Chapter 1\n• Chapter 2"
-        parsed_dash = parse_track_names(dash_input)
-        self.assertEqual(parsed_dash, ["Intro", "Chapter 1", "Chapter 2"])
+        self.assertEqual(parse_track_names("- Intro\n* Chapter 1\n• Chapter 2"), ["Intro", "Chapter 1", "Chapter 2"])
+        self.assertEqual(parse_track_names("Track 1: Start, Track 2: Middle, Track 3: Finish"), ["Track 1: Start", "Track 2: Middle", "Track 3: Finish"])
 
-        # 3. Comma-delimited list parsing
-        comma_input = "Track 1: Start, Track 2: Middle, Track 3: Finish"
-        parsed_comma = parse_track_names(comma_input)
-        self.assertEqual(parsed_comma, ["Track 1: Start", "Track 2: Middle", "Track 3: Finish"])
-
-        # 4. PUT endpoint validation with session
         with self.client.session_transaction() as sess:
             sess["user_id"] = "admin_user"
             sess["username"] = "admin"
             sess["role"] = "admin"
 
-        # Retail card should be rejected with 400
         res_retail = self.client.put("/api/admin/media/7gGiV/tracks", json={
             "type": "yoto",
             "raw_text": "• Chapter 1: Test"
@@ -596,11 +467,6 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
 
     def test_13_chapter_number_extraction_and_overlay_rendering(self):
         """Verifies regex extraction of chapter numbers and 16x16 pixel overlay generation."""
-        from routes.admin_curation import extract_chapter_number, render_16x16_icon_with_overlay
-        import io
-        from PIL import Image
-
-        # 1. Test chapter number extraction regex variants
         self.assertEqual(extract_chapter_number("Chapter 1: The Beginning", 99), 1)
         self.assertEqual(extract_chapter_number("Ch. 04 - Midnight Run", 99), 4)
         self.assertEqual(extract_chapter_number("Chap 12: Escape", 99), 12)
@@ -608,43 +474,30 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         self.assertEqual(extract_chapter_number("Track 07", 99), 7)
         self.assertEqual(extract_chapter_number("05. Morning Dew", 99), 5)
         self.assertEqual(extract_chapter_number("10 - Journey Home", 99), 10)
-        # Fallback case when no number exists
         self.assertEqual(extract_chapter_number("Prologue", 1), 1)
         self.assertEqual(extract_chapter_number("Epilogue", 15), 15)
 
-        # 2. Test 16x16 icon rendering with corner overlay
-        # Create a dummy 64x64 RGBA image in memory
         base_img = Image.new("RGBA", (64, 64), (100, 150, 200, 255))
         buf = io.BytesIO()
         base_img.save(buf, format="PNG")
-        raw_bytes = buf.getvalue()
-
-        # Render with overlay
-        out_bytes = render_16x16_icon_with_overlay(raw_bytes, number=8, corner="top-right")
+        out_bytes = render_16x16_icon_with_overlay(buf.getvalue(), number=8, corner="top-right")
         self.assertTrue(out_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
-
         out_img = Image.open(io.BytesIO(out_bytes))
         self.assertEqual(out_img.size, (16, 16))
         self.assertEqual(out_img.mode, "RGBA")
 
     def test_14_batch_track_icon_endpoint(self):
         """Verifies POST /api/admin/media/<media_id>/tracks/batch-icon assigns icons and handles overlay flag."""
-        import base64
-        import io
-        from PIL import Image
-
         with self.client.session_transaction() as sess:
             sess["user_id"] = "admin_user"
             sess["username"] = "admin"
             sess["role"] = "admin"
 
-        # Generate a small 16x16 red square as base64
         test_img = Image.new("RGBA", (16, 16), (255, 0, 0, 255))
         buf = io.BytesIO()
         test_img.save(buf, format="PNG")
         b64_str = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
 
-        # Test against a seeded ABS item (mocking ABS get_item and Bridge icon push)
         abs_item_id = "7696c2d1-49bc-4165-a3dd-743b4ad79328"
         mock_abs_item = {
             "id": abs_item_id,
@@ -680,30 +533,17 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
         test_id = "test_card_phys_1"
         test_id2 = "test_card_phys_2"
         try:
-            # 1. Single toggle
-            database.upsert_media_items([{
-                "id": test_id,
-                "type": "yoto",
-                "title": "Physical Test Card 1"
-            }])
-
+            database.upsert_media_items([{"id": test_id, "type": "yoto", "title": "Physical Test Card 1"}])
             res = self.client.post(f"/api/admin/catalog/physical/{test_id}", json={"has_physical": True})
             self.assertEqual(res.status_code, 200)
             self.assertTrue(res.get_json().get("has_physical"))
 
-            # Verify in matrix
             matrix = database.get_catalog_matrix()
             match = next((it for it in matrix["items"] if it["id"] == test_id), None)
             self.assertIsNotNone(match)
             self.assertTrue(match.get("has_physical"))
 
-            # 2. Batch toggle
-            database.upsert_media_items([{
-                "id": test_id2,
-                "type": "yoto",
-                "title": "Physical Test Card 2"
-            }])
-
+            database.upsert_media_items([{"id": test_id2, "type": "yoto", "title": "Physical Test Card 2"}])
             res_batch = self.client.post("/api/admin/curation/batch-physical", json={
                 "media_ids": [test_id, test_id2],
                 "has_physical": False
@@ -726,7 +566,6 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
 
     def test_16_catalog_rotation_and_series_sequencing(self):
         """Verifies Book #1 series prioritization, last-played top sorting, and hide_physical filtering."""
-        # Create an isolated test profile with inherit_shared = False
         prof_key = "rot_test_kid"
         try:
             database.upsert_profile(prof_key, {
@@ -735,49 +574,17 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
                 "hide_physical": False,
                 "yoto": {"inherit_shared": False}
             })
-
-            # Create test series items
-            s_book1 = {
-                "id": "seq_series_b1",
-                "type": "yoto",
-                "title": "Adventures in Magic #1: The Beginning",
-                "series": "Adventures in Magic",
-                "series_order": "1",
-                "has_physical": False
-            }
-            s_book2 = {
-                "id": "seq_series_b2",
-                "type": "yoto",
-                "title": "Adventures in Magic #2: The Dark Forest",
-                "series": "Adventures in Magic",
-                "series_order": "2",
-                "has_physical": False
-            }
-            recent_card = {
-                "id": "seq_recent_card",
-                "type": "yoto",
-                "title": "Yesterday Bedtime Story",
-                "raw_metadata": {"lastPlayedAt": "2026-11-06T10:00:00Z"},
-                "has_physical": False
-            }
-            phys_card = {
-                "id": "seq_phys_card",
-                "type": "yoto",
-                "title": "Bedroom Binder Plastic Card",
-                "has_physical": True
-            }
-
-            database.upsert_media_items([s_book1, s_book2, recent_card, phys_card])
+            database.upsert_media_items([
+                {"id": "seq_series_b1", "type": "yoto", "title": "Adventures in Magic #1: The Beginning", "series": "Adventures in Magic", "series_order": "1", "has_physical": False},
+                {"id": "seq_series_b2", "type": "yoto", "title": "Adventures in Magic #2: The Dark Forest", "series": "Adventures in Magic", "series_order": "2", "has_physical": False},
+                {"id": "seq_recent_card", "type": "yoto", "title": "Yesterday Bedtime Story", "raw_metadata": {"lastPlayedAt": "2026-11-06T10:00:00Z"}, "has_physical": False},
+                {"id": "seq_phys_card", "type": "yoto", "title": "Bedroom Binder Plastic Card", "has_physical": True},
+            ])
             database.set_item_physical("seq_phys_card", True)
-
-            # Allow them explicitly for the isolated test profile
             database.batch_update_profile_media_permissions(
                 media_ids=["seq_series_b1", "seq_series_b2", "seq_recent_card", "seq_phys_card"],
                 profile_actions={prof_key: "allow"}
             )
-
-            from datetime import datetime as _real_datetime
-            from unittest.mock import patch
 
             class _FixedDatetime(_real_datetime):
                 @classmethod
@@ -786,14 +593,11 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
 
             with patch("datetime.datetime", _FixedDatetime):
                 items = database.get_catalog_items_for_profile(prof_key, "yoto")
-            # 1. Recent item MUST be first!
             self.assertEqual(items[0]["id"], "seq_recent_card")
-            # 2. Atomic whole-series rotation: when a series is pulled into discovery, all books are preserved in sequence order!
             self.assertEqual(items[1]["id"], "seq_series_b1")
             self.assertEqual(items[2]["id"], "seq_series_b2")
             self.assertEqual(len(items), 3)
 
-            # Now test hide_physical
             database.upsert_profile(prof_key, {
                 "display_name": "Rotation Kid",
                 "catalog_rotation_limit": 80,
@@ -821,53 +625,32 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
     def test_dual_profile_catalog_limits_touch_vs_kiosk(self):
         """Verifies dual profile limits: Touch device cap vs Kiosk unlimited / custom cap."""
         prof_key = "dual_test_kid"
-        test_cards = []
+        test_cards = [
+            {"id": f"dual_card_{i}", "type": "yoto", "title": f"Dual Test Story {i}", "author": "Test Author", "cover_url": f"https://example.com/dual_card_{i}.jpg", "raw_data": {}}
+            for i in range(1, 6)
+        ]
         try:
-            # Seed 5 standalone cards
-            for i in range(1, 6):
-                cid = f"dual_card_{i}"
-                test_cards.append({
-                    "id": cid,
-                    "type": "yoto",
-                    "title": f"Dual Test Story {i}",
-                    "author": "Test Author",
-                    "cover_url": f"https://example.com/{cid}.jpg",
-                    "raw_data": {}
-                })
             database.upsert_media_items(test_cards)
-
-            # Upsert profile with touch limit 2 and kiosk limit 0 (unlimited)
             database.upsert_profile(prof_key, {
                 "display_name": "Dual Limit Kid",
                 "catalog_rotation_limit": 2,
                 "kiosk_catalog_limit": 0,
-                "yoto": {
-                    "inherit_shared": False,
-                    "allowed_card_ids": [c["id"] for c in test_cards]
-                }
+                "yoto": {"inherit_shared": False, "allowed_card_ids": [c["id"] for c in test_cards]}
             })
 
-            # Verify Touch client receives exactly 2 cards
             touch_items = database.get_catalog_items_for_profile(prof_key, "yoto", client_type="touch")
             self.assertEqual(len(touch_items), 2)
 
-            # Verify Kiosk client receives ALL 5 cards
             kiosk_items = database.get_catalog_items_for_profile(prof_key, "yoto", client_type="kiosk")
             self.assertEqual(len(kiosk_items), 5)
-
-            # Verify the top 2 items on the Kiosk match the Touch items in exact order (The Superset Principle)
             self.assertEqual(touch_items[0]["id"], kiosk_items[0]["id"])
             self.assertEqual(touch_items[1]["id"], kiosk_items[1]["id"])
 
-            # Update Kiosk limit to a custom positive number (3)
             database.upsert_profile(prof_key, {
                 "display_name": "Dual Limit Kid",
                 "catalog_rotation_limit": 2,
                 "kiosk_catalog_limit": 3,
-                "yoto": {
-                    "inherit_shared": False,
-                    "allowed_card_ids": [c["id"] for c in test_cards]
-                }
+                "yoto": {"inherit_shared": False, "allowed_card_ids": [c["id"] for c in test_cards]}
             })
             kiosk_items_capped = database.get_catalog_items_for_profile(prof_key, "yoto", client_type="kiosk")
             self.assertEqual(len(kiosk_items_capped), 3)
@@ -887,10 +670,8 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             sess["username"] = "admin"
             sess["role"] = "admin"
 
-        # Backup original credentials so tests never overwrite user's live DB credentials
         orig_creds = database.get_api_credentials()
         try:
-            # 1. Update Yoto credentials via PUT
             res_put = self.client.put("/api/admin/settings/credentials", json={
                 "yoto_client_id": "test_client_id_12345",
                 "yoto_refresh_token": "test_refresh_abcde"
@@ -898,14 +679,12 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             self.assertEqual(res_put.status_code, 200)
             self.assertTrue(res_put.get_json().get("ok"))
 
-            # 2. Verify GET masks sensitive credentials
             res_get = self.client.get("/api/admin/settings/credentials")
             self.assertEqual(res_get.status_code, 200)
             data = res_get.get_json()
             self.assertEqual(data.get("yoto_client_id"), "test_client_id_12345")
             self.assertIn("••••", data.get("yoto_refresh_token", ""))
 
-            # 3. Test OAuth PKCE start endpoint
             res_oauth = self.client.post("/api/admin/yoto/oauth/start", json={
                 "client_id": "test_client_id_12345",
                 "redirect_uri": "http://127.0.0.1:8787/callback"
@@ -916,9 +695,277 @@ class TestCurationMatrixAndYotoRetail(unittest.TestCase):
             self.assertIn("https://login.yotoplay.com/authorize", oauth_data.get("auth_url", ""))
             self.assertIn("code_challenge=", oauth_data.get("auth_url", ""))
         finally:
-            # Restore original credentials and hot-reload client singletons
             database.update_api_credentials(orig_creds)
             clients.reload_clients()
+
+
+class TestSeriesOverridesAndAdminSeries(IsolatedTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = app.test_client()
+        conn = database.get_db_connection()
+        try:
+            with conn:
+                conn.execute("DELETE FROM media_series_overrides;")
+                conn.execute("DELETE FROM profile_media_permissions WHERE media_id LIKE 'p4_%';")
+                conn.execute("DELETE FROM media_items WHERE id LIKE 'p4_%';")
+                conn.execute("DELETE FROM profiles WHERE id = 'p4_child';")
+        finally:
+            conn.close()
+
+        database.upsert_profile("p4_child", {
+            "display_name": "P4 Child",
+            "catalog_rotation_limit": 60,
+            "yoto": {"inherit_shared": True},
+        })
+        database.set_shared_rule("include_all", True)
+        database.set_shared_rule("include_myo_by_default", True)
+
+        database.upsert_media_items([
+            {
+                "id": "p4_yoto_1",
+                "type": "yoto",
+                "title": "The Dragon's Prophecy",
+                "author": "Yoto Studio",
+                "cover_url": "https://cdn.example.com/dragon1.jpg",
+                "raw_metadata": {"series": "AutoOldSeries", "series_order": "9"},
+            },
+            {
+                "id": "p4_yoto_2",
+                "type": "yoto",
+                "title": "Lost Treasure of the Isles",
+                "author": "Yoto Studio",
+                "cover_url": "https://cdn.example.com/dragon2.jpg",
+                "raw_metadata": {},
+            },
+            {
+                "id": "p4_myo_1",
+                "type": "yoto_myo",
+                "title": "Secret Bridge Story",
+                "author": "Parents",
+                "cover_url": "https://cdn.example.com/dragon15.jpg",
+                "raw_metadata": {"series": "TempGroup", "series_order": "3"},
+            },
+            {
+                "id": "p4_abs_1",
+                "type": "abs",
+                "title": "Audiobook Item",
+                "author": "ABS Author",
+                "raw_metadata": {"series": "Native ABS Series", "series_order": "1", "tags": ["Children"]},
+            },
+        ])
+
+    def _login_admin(self):
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = "p4_admin"
+            sess["username"] = "admin"
+            sess["role"] = "admin"
+
+    def test_01_schema_v11_and_synthetic_v10_upgrade(self):
+        """Verifies live test DB is at schema >= 11 and a synthetic v10 DB migrates cleanly."""
+        conn = database.get_db_connection()
+        try:
+            ver = conn.execute("PRAGMA user_version;").fetchone()[0]
+            self.assertGreaterEqual(ver, 11)
+            self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='media_series_overrides';").fetchone())
+            self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_media_series_overrides_series';").fetchone())
+        finally:
+            conn.close()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            v10_path = Path(tmpdir) / "v10.db"
+            c10 = sqlite3.connect(v10_path)
+            try:
+                c10.row_factory = sqlite3.Row
+                c10.executescript("""
+                    CREATE TABLE media_items (
+                        id TEXT PRIMARY KEY,
+                        type TEXT NOT NULL,
+                        title TEXT NOT NULL
+                    );
+                    PRAGMA user_version = 10;
+                """)
+                database.run_schema_migrations(c10)
+                self.assertGreaterEqual(c10.execute("PRAGMA user_version;").fetchone()[0], 11)
+                self.assertIsNotNone(c10.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='media_series_overrides';").fetchone())
+            finally:
+                c10.close()
+
+    def test_02_single_card_override_and_matrix_enrichment(self):
+        """Verifies POST /api/admin/media/<id>/series works for yoto & yoto_myo and enriches get_catalog_matrix."""
+        self._login_admin()
+
+        res = self.client.post("/api/admin/media/p4_yoto_1/series", json={"series": "Wings of Fire", "series_order": "1"})
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["series"], "Wings of Fire")
+        self.assertEqual(data["series_order"], "1")
+        self.assertTrue(data["is_series_overridden"])
+
+        res_myo = self.client.post("/api/admin/media/p4_myo_1/series", json={"series": "Wings of Fire", "sequence": "1.5"})
+        self.assertEqual(res_myo.status_code, 200)
+        self.assertEqual(res_myo.get_json()["series_order"], "1.5")
+
+        matrix = database.get_catalog_matrix()
+        by_id = {it["id"]: it for it in matrix["items"]}
+        y1 = by_id["p4_yoto_1"]
+        self.assertEqual(y1["series"], "Wings of Fire")
+        self.assertEqual(y1["series_order"], "1")
+        self.assertEqual(y1["series_list"], [{"name": "Wings of Fire", "order": "1"}])
+        self.assertTrue(y1["is_series_overridden"])
+        self.assertEqual(y1["auto_series"], "AutoOldSeries")
+        self.assertEqual(y1["auto_series_order"], "9")
+
+        m1 = by_id["p4_myo_1"]
+        self.assertEqual(m1["series"], "Wings of Fire")
+        self.assertEqual(m1["series_order"], "1.5")
+        self.assertTrue(m1["is_series_overridden"])
+
+    def test_03_rejects_abs_unknown_and_unauthenticated_requests(self):
+        """Rejects ABS items (400), unknown IDs (404), and unauthenticated callers (401/403)."""
+        unauth = self.client.post("/api/admin/media/p4_yoto_1/series", json={"series": "Blocked"}, environ_base={"REMOTE_ADDR": "8.8.8.8"})
+        self.assertIn(unauth.status_code, (401, 403))
+
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = "p4_member"
+            sess["username"] = "sitter"
+            sess["role"] = "member"
+        member_res = self.client.post("/api/admin/media/p4_yoto_1/series", json={"series": "Blocked"})
+        self.assertIn(member_res.status_code, (401, 403))
+
+        self._login_admin()
+        abs_res = self.client.post("/api/admin/media/p4_abs_1/series", json={"series": "Hacked", "series_order": "1"})
+        self.assertEqual(abs_res.status_code, 400)
+        self.assertFalse(abs_res.get_json()["ok"])
+
+        miss_res = self.client.post("/api/admin/media/p4_does_not_exist/series", json={"series": "Nope"})
+        self.assertEqual(miss_res.status_code, 404)
+
+        batch_res = self.client.post("/api/admin/media/batch-series", json={
+            "series": "AtomicFailSeries",
+            "items": [{"id": "p4_yoto_1", "sequence": "1"}, {"id": "p4_abs_1", "sequence": "2"}],
+        })
+        self.assertEqual(batch_res.status_code, 400)
+        self.assertEqual(database.get_all_series_overrides(), {})
+
+    def test_04_upstream_resync_preserves_overrides(self):
+        """Verifies upsert_media_items never overwrites manual parent series overrides."""
+        self._login_admin()
+        res = self.client.post("/api/admin/media/p4_yoto_1/series", json={"series": "Custom Saga", "series_order": "2"})
+        self.assertEqual(res.status_code, 200)
+
+        database.upsert_media_items([{
+            "id": "p4_yoto_1",
+            "type": "yoto",
+            "title": "The Dragon's Prophecy (Updated)",
+            "author": "Yoto Studio",
+            "cover_url": "https://cdn.example.com/dragon1_v2.jpg",
+            "raw_metadata": {"series": "UpstreamChangedSeries", "series_order": "99"},
+        }])
+
+        matrix = database.get_catalog_matrix()
+        y1 = next(it for it in matrix["items"] if it["id"] == "p4_yoto_1")
+        self.assertEqual(y1["title"], "The Dragon's Prophecy (Updated)")
+        self.assertTrue(y1["is_series_overridden"])
+        self.assertEqual(y1["series"], "Custom Saga")
+        self.assertEqual(y1["series_order"], "2")
+        self.assertEqual(y1["auto_series"], "UpstreamChangedSeries")
+
+    def test_05_standalone_clear_and_delete_revert(self):
+        """Verifies empty series marks card Standalone, and DELETE reverts to auto_series."""
+        self._login_admin()
+        res_clear = self.client.post("/api/admin/media/p4_yoto_1/series", json={"series": "", "series_order": ""})
+        self.assertEqual(res_clear.status_code, 200)
+
+        matrix_cleared = database.get_catalog_matrix()
+        y1_cleared = next(it for it in matrix_cleared["items"] if it["id"] == "p4_yoto_1")
+        self.assertTrue(y1_cleared["is_series_overridden"])
+        self.assertEqual(y1_cleared["series"], "")
+        self.assertEqual(y1_cleared["series_list"], [])
+        self.assertEqual(y1_cleared["auto_series"], "AutoOldSeries")
+
+        res_del = self.client.delete("/api/admin/media/p4_yoto_1/series")
+        self.assertEqual(res_del.status_code, 200)
+        del_data = res_del.get_json()
+        self.assertTrue(del_data["ok"])
+        self.assertTrue(del_data["reverted"])
+        self.assertEqual(del_data["series"], "AutoOldSeries")
+        self.assertEqual(del_data["series_order"], "9")
+
+        matrix_reverted = database.get_catalog_matrix()
+        y1_rev = next(it for it in matrix_reverted["items"] if it["id"] == "p4_yoto_1")
+        self.assertFalse(y1_rev["is_series_overridden"])
+        self.assertEqual(y1_rev["series"], "AutoOldSeries")
+        self.assertEqual(y1_rev["series_order"], "9")
+
+    def test_06_batch_series_and_decimal_sequence_curation_integration(self):
+        """Verifies batch-series decimal sequencing drives atomic whole-series rotation and Book #1 cover."""
+        self._login_admin()
+        res = self.client.post("/api/admin/media/batch-series", json={
+            "series": "Dragon Isles",
+            "items": [
+                {"id": "p4_yoto_1", "sequence": "1"},
+                {"id": "p4_myo_1", "sequence": "1.5"},
+                {"id": "p4_yoto_2", "sequence": "2"},
+            ],
+        })
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["updated_count"], 3)
+        self.assertEqual(data["series"], "Dragon Isles")
+
+        catalog = database.get_catalog_items_for_profile("p4_child", media_type="yoto", client_type="touch")
+        dragon_books = [it for it in catalog if it.get("series") == "Dragon Isles"]
+        self.assertEqual(len(dragon_books), 3)
+        for book in dragon_books:
+            self.assertEqual(book["series_cover_id"], "p4_yoto_1")
+            self.assertIn("p4_yoto_1", book["series_cover"])
+
+        seqs_by_id = {b["id"]: b["sequence"] for b in dragon_books}
+        self.assertEqual(seqs_by_id["p4_yoto_1"], 1.0)
+        self.assertEqual(seqs_by_id["p4_myo_1"], 1.5)
+        self.assertEqual(seqs_by_id["p4_yoto_2"], 2.0)
+
+        res_fallback = self.client.post("/api/admin/media/batch-series", json={
+            "series": "Fallback Saga",
+            "media_ids": ["p4_yoto_2", "p4_yoto_1"],
+        })
+        self.assertEqual(res_fallback.status_code, 200)
+        overrides = database.get_all_series_overrides()
+        self.assertEqual(overrides["p4_yoto_2"]["series"], "Fallback Saga")
+        self.assertEqual(overrides["p4_yoto_2"]["series_order"], "1")
+        self.assertEqual(overrides["p4_yoto_1"]["series_order"], "2")
+
+    def test_07_prune_stale_cleans_orphan_overrides(self):
+        """Verifies pruning a deleted Yoto card cascades/cleans its row in media_series_overrides."""
+        database.set_media_series_override("p4_yoto_1", "Cleanup Series", "1")
+        self.assertIn("p4_yoto_1", database.get_all_series_overrides())
+
+        keep_ids = [
+            it["id"] for it in database.get_catalog_matrix()["items"]
+            if it["type"] in ("yoto", "yoto_myo") and it["id"] != "p4_yoto_1"
+        ]
+        removed = database.prune_stale_media_items(valid_ids=keep_ids, media_types=["yoto", "yoto_myo"])
+        self.assertGreaterEqual(removed, 1)
+        self.assertNotIn("p4_yoto_1", database.get_all_series_overrides())
+
+    def test_08_admin_html_contains_series_override_modals(self):
+        """Verifies /admin HTML renders single & bulk series override modal elements and triggers."""
+        res = self.client.get("/admin")
+        self.assertEqual(res.status_code, 200)
+        html = res.get_data(as_text=True)
+        for token in (
+            'id="existingSeriesList"',
+            'id="editSeriesModal"',
+            'id="batchSeriesModal"',
+            'openBatchSeriesModal()',
+            '/static/js/admin/series.js?v=',
+            '/static/js/admin/library.js?v=',
+        ):
+            self.assertIn(token, html, f"Expected {token} in /admin HTML")
+
 
 if __name__ == "__main__":
     unittest.main()

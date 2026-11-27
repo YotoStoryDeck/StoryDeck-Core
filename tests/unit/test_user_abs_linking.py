@@ -1,20 +1,24 @@
+"""Unit tests for user & profile Audiobookshelf account linking, key minting, and revocation."""
+import base64
+import json
+from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import tests.test_isolation  # noqa: F401 - must import first to sandbox SQLite DB
+from tests.harness import IsolatedTestCase
 import app as app_module
 import clients
-import database
 from clients.abs_client import ABSClient
 from core.bridge.manager import get_bridge_manager
 from core.bridge.playback import PlaybackManager
+import database
 
 
-class TestUserABSAccountLinking(unittest.TestCase):
+class TestUserABSAccountLinking(IsolatedTestCase):
     def setUp(self):
+        super().setUp()
         self.client = app_module.app.test_client()
         database.init_db()
         if not database.get_user_by_username("abs_adult"):
@@ -100,7 +104,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
         finally:
             clients.abs_client = old_abs
 
-        # LAN guest cannot verify ABS keys
         anon = app_module.app.test_client()
         res_guest = anon.post(
             "/api/auth/abs/verify",
@@ -135,18 +138,15 @@ class TestUserABSAccountLinking(unittest.TestCase):
                 self.assertEqual(user_obj["abs_username"], "dad_abs")
                 self.assertNotIn("abs_api_key", user_obj)
 
-            # GET /api/auth/me exposes flags without raw token
             me_res = self.client.get("/api/auth/me")
             me_user = me_res.get_json()["user"]
             self.assertTrue(me_user["has_abs_api_key"])
             self.assertEqual(me_user["abs_username"], "dad_abs")
             self.assertNotIn("abs_api_key", me_user)
 
-            # ABSClient resolves user:<uid> to adult's personal token
             resolved = abs_inst.resolve_token_for_profile(f"user:{self.adult_user['id']}")
             self.assertEqual(resolved, "secret_dad_abs_key_987")
 
-            # Clear / unlink ABS account
             clr_res = self.client.put("/api/auth/me", json={"clear_abs_account": True})
             self.assertEqual(clr_res.status_code, 200)
             clr_user = clr_res.get_json()["user"]
@@ -196,14 +196,11 @@ class TestUserABSAccountLinking(unittest.TestCase):
             self.assertEqual(slot.get("owner_user_id"), self.adult_user["id"])
             self.assertEqual(slot.get("yoto_card_id"), "yoto_user_stream_1")
 
-            # Verify kid profile primary card was NOT touched
             kid_prof = database.get_profile_by_id("kid_abs_test")
             self.assertEqual(kid_prof.get("primary_card_id"), "kid_card_original")
 
-            # Verify get_item was called with adult's personal token
             fake_abs.get_item.assert_called_with("adult_book_1", token="adult_stream_tok_abc")
 
-            # Verify PlaybackManager uses explicit override token when playing on Child A's player
             pb = PlaybackManager()
             pb.expect("child-a-mini", "yoto_user_stream_1", abs_token_override="adult_stream_tok_abc", owner_override=f"user:{self.adult_user['id']}")
             db_slot = get_bridge_manager().get_slot(slot["slot_id"])
@@ -216,20 +213,13 @@ class TestUserABSAccountLinking(unittest.TestCase):
 
     def test_05_registered_guest_can_link_and_lan_guest_uses_master_abs(self):
         """Verifies registered guest accounts can link personal ABS keys, while unregistered LAN guests stay on master ABS key."""
-        import json
-        from unittest.mock import MagicMock
-        import clients
-        import database
-        from app import app as flask_app
-        from clients.abs_client import ABSClient
-
         guest_u = database.create_admin_user(
             "test_reg_guest_abs",
             "GuestPass123!",
             display_name="Registered Guest",
             role="guest",
         )
-        old_abs = clients.abs_client
+        old_abs, old_yoto = clients.abs_client, clients.yoto_client
         try:
             abs_cli = ABSClient.__new__(ABSClient)
             abs_cli.base_url = "http://127.0.0.1:13378"
@@ -242,10 +232,13 @@ class TestUserABSAccountLinking(unittest.TestCase):
                     "libraries_accessible": ["lib1"],
                 }
             )
+            abs_cli.get_item = MagicMock(return_value=None)
+            fake_yoto = MagicMock()
+            fake_yoto.save_stream_playlist.return_value = "yoto_guest_stream_1"
             clients.abs_client = abs_cli
+            clients.yoto_client = fake_yoto
 
-            # 1. Signed-in registered guest user can verify and link personal ABS key
-            client = flask_app.test_client()
+            client = app_module.app.test_client()
             with client.session_transaction() as sess:
                 sess["user_id"] = guest_u["id"]
                 sess["username"] = guest_u["username"]
@@ -271,13 +264,11 @@ class TestUserABSAccountLinking(unittest.TestCase):
             self.assertEqual(user_out.get("abs_username"), "guest_abs")
             self.assertNotIn("abs_api_key", user_out)
 
-            # Registered guest resolves their personal key
             self.assertEqual(
                 abs_cli.resolve_token_for_profile(f"user:{guest_u['id']}"),
                 "reg_guest_abs_key",
             )
 
-            # Clearing the registered guest's link falls back to master ABS API key
             res_clear = client.put(
                 "/api/auth/me",
                 json={"clear_abs_account": True},
@@ -288,8 +279,7 @@ class TestUserABSAccountLinking(unittest.TestCase):
                 "master_api_key_only",
             )
 
-            # 2. Unregistered LAN guest cannot link ABS keys or invoke use_user_abs, and always uses master key
-            lan_client = flask_app.test_client()
+            lan_client = app_module.app.test_client()
             res_lan_verify = lan_client.post(
                 "/api/auth/abs/verify",
                 json={"abs_api_key": "lan_key"},
@@ -321,18 +311,11 @@ class TestUserABSAccountLinking(unittest.TestCase):
                 "master_api_key_only",
             )
         finally:
-            clients.abs_client = old_abs
+            clients.abs_client, clients.yoto_client = old_abs, old_yoto
             database.delete_user(guest_u["id"])
 
     def test_06_auto_match_abs_by_email_and_username_with_api_key_minting_and_revoke(self):
         """Verifies email -> username ABS auto-matching, POST /api/api-keys scoped key minting, and key revocation on unlink."""
-        import json
-        from unittest.mock import MagicMock, patch
-        import clients
-        import database
-        from app import app as flask_app
-        from clients.abs_client import ABSClient
-
         member_u = database.create_admin_user(
             "test_automatch_member",
             "MemberPass123!",
@@ -365,19 +348,16 @@ class TestUserABSAccountLinking(unittest.TestCase):
             ]
             abs_cli.get_all_users = MagicMock(return_value=sample_abs_users)
 
-            # 1. Email takes priority over username (matching Authentik SSO priority)
             m_email = abs_cli.match_abs_user(email="automatch@example.com", username="test_automatch_member")
             self.assertIsNotNone(m_email)
             self.assertEqual(m_email["id"], "abs_uid_email_match")
             self.assertEqual(m_email["matched_by"], "email")
 
-            # 2. Falls back to username when email is empty or unmatched
             m_uname = abs_cli.match_abs_user(email="nomatch@example.com", username="test_automatch_member")
             self.assertIsNotNone(m_uname)
             self.assertEqual(m_uname["id"], "abs_uid_uname_match")
             self.assertEqual(m_uname["matched_by"], "username")
 
-            # 3. End-to-end POST /api/auth/abs/auto-match mints via POST /api/api-keys and stores key
             clients.abs_client = abs_cli
 
             fake_get_keys_resp = MagicMock()
@@ -391,11 +371,9 @@ class TestUserABSAccountLinking(unittest.TestCase):
                     }
                 ]
             }
-            fake_del_resp = MagicMock()
-            fake_del_resp.status_code = 200
+            fake_del_resp = MagicMock(status_code=200)
 
-            fake_post_key_resp = MagicMock()
-            fake_post_key_resp.status_code = 200
+            fake_post_key_resp = MagicMock(status_code=200)
             fake_post_key_resp.json.return_value = {
                 "apiKey": {
                     "id": "minted_key_id_99",
@@ -408,7 +386,7 @@ class TestUserABSAccountLinking(unittest.TestCase):
             with patch("clients.abs_client.requests.get", return_value=fake_get_keys_resp), \
                  patch("clients.abs_client.requests.delete", return_value=fake_del_resp) as mock_del, \
                  patch("clients.abs_client.requests.post", return_value=fake_post_key_resp) as mock_post:
-                client = flask_app.test_client()
+                client = app_module.app.test_client()
                 with client.session_transaction() as sess:
                     sess["user_id"] = member_u["id"]
                     sess["username"] = member_u["username"]
@@ -424,13 +402,11 @@ class TestUserABSAccountLinking(unittest.TestCase):
                 self.assertNotIn("abs_api_key", am_data)
                 mock_post.assert_called_once()
 
-                # Verify minted key is stored in DB and resolved for playback
                 self.assertEqual(
                     abs_cli.resolve_token_for_profile(f"user:{member_u['id']}"),
                     "minted_jwt_for_abs_diff_uname",
                 )
 
-                # Unlinking revokes the StoryDeck key on ABS and clears DB
                 res_unlink = client.put("/api/auth/me", json={"clear_abs_account": True})
                 self.assertEqual(res_unlink.status_code, 200)
                 self.assertGreaterEqual(mock_del.call_count, 2)
@@ -444,13 +420,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
 
     def test_07_abs_master_key_admin_check_profile_keygen_and_self_service_toggle(self):
         """Verifies master key admin permission warning, profile ABS API key auto-generation, and self-service toggle."""
-        import json
-        from unittest.mock import MagicMock, patch
-        import clients
-        import database
-        from app import app as flask_app
-        from clients.abs_client import ABSClient
-
         member_u = database.create_admin_user(
             "test_selfservice_member",
             "MemberPass123!",
@@ -462,7 +431,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
         try:
             abs_cli = ABSClient("http://127.0.0.1:13378", "master_test_key")
 
-            # 1. Non-admin Master API key reports is_admin=False and explicit warning
             abs_cli.verify_user_token = MagicMock(
                 return_value={"id": "u1", "username": "throwaway_bridge", "type": "user", "is_active": True}
             )
@@ -471,7 +439,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
             self.assertFalse(perm_non_admin["is_admin"])
             self.assertIn("manually generate", perm_non_admin["warning"])
 
-            # Admin/Root Master API key reports is_admin=True and no warning
             abs_cli.verify_user_token = MagicMock(
                 return_value={"id": "u0", "username": "parent_root", "type": "root", "is_active": True}
             )
@@ -480,7 +447,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
             self.assertTrue(perm_admin["is_admin"])
             self.assertEqual(perm_admin["warning"], "")
 
-            # 2. Profile ABS key auto-generation via provision_profile_api_key
             abs_cli.get_all_users = MagicMock(
                 return_value=[
                     {
@@ -511,10 +477,9 @@ class TestUserABSAccountLinking(unittest.TestCase):
                 self.assertEqual(minted_prof["api_key"], "minted_profile_jwt_child_a")
                 self.assertEqual(minted_prof["source"], "api_key")
 
-            # 3. Admin toggle disabling user self-service ABS key generation blocks non-admins with 403
             clients.abs_client = abs_cli
             database.set_system_setting("abs_allow_user_self_service_key_gen", False)
-            client = flask_app.test_client()
+            client = app_module.app.test_client()
             with client.session_transaction() as sess:
                 sess["user_id"] = member_u["id"]
                 sess["username"] = member_u["username"]
@@ -533,7 +498,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
             res_put_abs = client.put("/api/auth/me", json={"abs_api_key": "some_key"})
             self.assertEqual(res_put_abs.status_code, 403)
 
-            # Non-ABS profile edits (display_name) still succeed when self-service ABS is disabled
             res_put_dn = client.put("/api/auth/me", json={"display_name": "Updated Member Name"})
             self.assertEqual(res_put_dn.status_code, 200)
         finally:
@@ -543,14 +507,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
 
     def test_08_unlink_and_force_recreate_delete_old_api_key_by_jwt_key_id(self):
         """Verifies both POST /api/auth/abs/unlink and force recreation delete the previous ABS API key."""
-        import base64
-        import json
-        from unittest.mock import MagicMock, patch
-        import clients
-        import database
-        from app import app as flask_app
-        from clients.abs_client import ABSClient
-
         def _make_fake_abs_jwt(key_id: str) -> str:
             hdr = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').decode().rstrip("=")
             body = base64.urlsafe_b64encode(
@@ -622,13 +578,12 @@ class TestUserABSAccountLinking(unittest.TestCase):
             with patch("clients.abs_client.requests.get", return_value=fake_get_keys), \
                  patch("clients.abs_client.requests.delete", return_value=fake_del) as mock_del, \
                  patch("clients.abs_client.requests.post", side_effect=post_responses):
-                client = flask_app.test_client()
+                client = app_module.app.test_client()
                 with client.session_transaction() as sess:
                     sess["user_id"] = member_u["id"]
                     sess["username"] = member_u["username"]
                     sess["role"] = "member"
 
-                # 1. Initial auto-link mints key-uuid-1111
                 r1 = client.post("/api/auth/abs/auto-match", json={})
                 self.assertEqual(r1.status_code, 200)
                 self.assertEqual(
@@ -636,7 +591,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
                     key_1_jwt,
                 )
 
-                # 2. Force recreation deletes key-uuid-1111 and mints key-uuid-2222
                 r2 = client.post("/api/auth/abs/auto-match", json={})
                 self.assertEqual(r2.status_code, 200)
                 self.assertEqual(
@@ -649,7 +603,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
                     f"Expected key-uuid-1111 to be deleted on recreate, got: {deleted_urls_after_recreate}",
                 )
 
-                # 3. Immediate POST /api/auth/abs/unlink deletes key-uuid-2222 and clears DB link
                 r3 = client.post("/api/auth/abs/unlink", json={})
                 self.assertEqual(r3.status_code, 200)
                 deleted_urls_after_unlink = [c.args[0] for c in mock_del.call_args_list]
@@ -662,8 +615,6 @@ class TestUserABSAccountLinking(unittest.TestCase):
                     master_jwt,
                 )
 
-                # 4. If target ABS user is 'root' and master key is 'admin' (403 Forbidden),
-                # existing key is NOT deleted and specific root restriction message is returned
                 database.update_user_abs_account(
                     member_u["id"],
                     abs_api_key=key_1_jwt,

@@ -1,11 +1,15 @@
-"""
-Unit tests for StoryDeck Web UI Overhaul, Shared Core Offline Awareness, and SSO/Authentik Integration.
-"""
-import tests.test_isolation  # noqa: F401 - must precede app/database imports
+"""Unit tests for StoryDeck Web UI Overhaul, Shared Core Offline Awareness, and SSO/Authentik Integration."""
+import base64
 import json
+import sqlite3
+import tempfile
 import unittest
 from html.parser import HTMLParser
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
+from tests.harness import IsolatedTestCase
 from app import app
 import database
 
@@ -42,13 +46,10 @@ class _SectionAndFormParser(HTMLParser):
             self._section_stack.pop()
 
 
-class TestUIOverhaulAndSSO(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        app.config["TESTING"] = True
-        database.init_db()
-
+class TestUIOverhaulAndSSO(IsolatedTestCase):
     def setUp(self):
+        super().setUp()
+        app.config["TESTING"] = True
         self.client = app.test_client()
         self._orig_sso_cfg = database.get_sso_config()
         self._orig_lan = database.get_system_settings().get("lan_sitter_access_enabled", True)
@@ -70,6 +71,7 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
                 conn.execute("DELETE FROM profiles WHERE id = 'ui_test_child';")
         finally:
             conn.close()
+        super().tearDown()
 
     def _login_session(self, role="admin", user_id="ui_admin_1", username="ui_admin"):
         with self.client.session_transaction() as sess:
@@ -126,7 +128,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertNotIn('class="dashboard-tabs"', html)
         self.assertNotIn('id="coreVersionBadge"', html)
 
-        # Ensure Core version tag helper strips duplicate leading 'v' prefixes (prevents 'vv1.1.0')
         with open("static/js/core_health.js", "r", encoding="utf-8") as f:
             ch_js = f.read()
         self.assertIn("function formatVersionTag", ch_js)
@@ -169,16 +170,13 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
 
     def test_04_sso_config_api_rbac_persistence_and_validation(self):
         """Verifies RBAC, secret masking/preservation, CIDR validation, LAN toggle, and OIDC callback placeholder."""
-        # 1. LAN guest denied (401)
         lan_res = self.client.get("/api/admin/auth/sso-config", environ_base={"REMOTE_ADDR": "192.168.1.88"})
         self.assertEqual(lan_res.status_code, 401)
 
-        # 2. Member denied (403)
         self._login_session(role="member", user_id="ui_mem_1", username="ui_member")
         mem_res = self.client.get("/api/admin/auth/sso-config")
         self.assertEqual(mem_res.status_code, 403)
 
-        # 3. Admin GET & PUT validation/persistence
         self._login_session(role="admin", user_id="ui_adm_1", username="ui_admin")
         bad_cidr = self.client.put("/api/admin/auth/sso-config", json={
             "sso_config": {"extra_trusted_proxies": ["not_an_ip"]}
@@ -207,7 +205,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertIn("••••", payload["sso_config"]["oidc_client_secret"])
         self.assertNotIn("supersecret_oidc_value_99", payload["sso_config"]["oidc_client_secret"])
 
-        # Preserves secret when masked string is submitted back
         resave_res = self.client.put("/api/admin/auth/sso-config", json={
             "sso_config": {
                 "provider_name": "Authentik",
@@ -217,7 +214,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertEqual(resave_res.status_code, 200)
         self.assertEqual(database.get_sso_config().get("oidc_client_secret"), "supersecret_oidc_value_99")
 
-        # OIDC callback without valid state redirects to login with error alert
         cb_res = self.client.get("/api/auth/oidc/callback")
         self.assertEqual(cb_res.status_code, 302)
         self.assertIn("/login?error=", cb_res.headers.get("Location", ""))
@@ -236,7 +232,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
             "extra_trusted_proxies": [],
         })
 
-        # Unprivileged Authentik user gets member & is auto-provisioned
         me_member = self.client.get(
             "/api/auth/me",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -256,7 +251,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertIsNotNone(db_mem)
         self.assertEqual(db_mem["sso_provider"], "authentik")
 
-        # Member SSO identity cannot access admin route
         adm_denied = self.client.get(
             "/api/admin/users",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -267,7 +261,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         )
         self.assertEqual(adm_denied.status_code, 403)
 
-        # User inside admin_group gets admin role
         adm_allowed = self.client.get(
             "/api/admin/users",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -279,7 +272,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         )
         self.assertEqual(adm_allowed.status_code, 200)
 
-        # Disabling forward_auth_enabled prevents SSO header bypass on /admin endpoints
         cfg = database.get_sso_config()
         cfg["forward_auth_enabled"] = False
         database.set_system_setting("sso_config", cfg)
@@ -297,7 +289,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         """Admins can pre-create an SSO-linked account without entering a local password."""
         self._login_session(role="admin", user_id="ui_adm_2", username="ui_admin_2")
 
-        # Local account still requires 8+ char password
         short_res = self.client.post("/api/admin/users", json={
             "username": "sso_ui_local_short",
             "display_name": "Short Pw",
@@ -306,7 +297,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         })
         self.assertEqual(short_res.status_code, 400)
 
-        # SSO pre-linked account succeeds without password
         sso_res = self.client.post("/api/admin/users", json={
             "username": "sso_ui_prelinked",
             "display_name": "Authentik Uncle",
@@ -322,7 +312,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
 
     def test_07_sso_initial_match_by_email_then_username_and_uid_binding(self):
         """Matches unbound accounts by email first, then username, binds immutable UID, and survives later renames."""
-        # 1. Pre-existing local account with different username but matching email
         by_email_user = database.create_admin_user(
             "sso_ui_local_alice",
             "AliceSecret1!",
@@ -345,7 +334,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertEqual(d1["role"], "admin")
         self.assertEqual(d1["sso_subject"], "uid_test_alice_001")
 
-        # Subsequent login with BOTH username and email changed in Authentik still resolves by immutable UID
         res1_renamed = self.client.get(
             "/api/auth/me",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -358,7 +346,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertEqual(res1_renamed.status_code, 200)
         self.assertEqual(res1_renamed.get_json()["user"]["id"], by_email_user["id"])
 
-        # 2. Pre-existing local account matched by case-insensitive username also binds UID & backfills empty email
         by_uname_user = database.create_admin_user(
             "sso_ui_local_bob",
             "BobSecret1!",
@@ -383,7 +370,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
 
     def test_08_sso_unmatched_user_auto_added_and_prevents_hijack(self):
         """Unmatched SSO user is auto-added; another UID with same username/email cannot hijack the bound account."""
-        # Completely new SSO user -> auto-added as 'member' with bound UID & email
         res_new = self.client.get(
             "/api/auth/me",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -402,7 +388,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertIsNotNone(carol_db)
         self.assertEqual(carol_db["email"], "sso_ui_carol@family.local")
 
-        # Another UID claiming Carol's username and email MUST NOT resolve to Carol's existing DB ID
         res_other = self.client.get(
             "/api/auth/me",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -420,10 +405,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
 
     def test_09_schema_v13_migration_and_admin_email_subject_crud(self):
         """Verifies schema >= 13 migration, admin UI fields, duplicate email 409, and UID unlink via PUT."""
-        import sqlite3
-        import tempfile
-        from pathlib import Path
-
         conn = database.get_db_connection()
         try:
             self.assertGreaterEqual(conn.execute("PRAGMA user_version;").fetchone()[0], 13)
@@ -463,7 +444,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
             finally:
                 c12.close()
 
-        # Admin email & sso_subject CRUD + duplicate rejection + unlink
         self._login_session(role="admin", user_id="ui_adm_v13", username="ui_admin_v13")
         u1 = database.create_admin_user(
             "sso_ui_m1",
@@ -503,7 +483,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
             self.assertEqual(res.status_code, 200)
             html = res.get_data(as_text=True)
 
-            # Centralized sidebar identity & self-service profile trigger must appear once
             for shared_id in (
                 "appSidebar",
                 "sidebarUserIdentity",
@@ -547,7 +526,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         ):
             self.assertIn(expected, html)
 
-        # ForwardAuth only mode
         database.set_system_setting("sso_config", {
             "forward_auth_enabled": True,
             "provider_name": "Authelia",
@@ -561,7 +539,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertEqual(sso_meta["provider_name"], "Authelia")
         self.assertEqual(sso_meta["login_url"], "/api/auth/sso/login")
 
-        # OIDC enabled & configured takes priority as login_mode == 'oidc'
         database.set_system_setting("sso_config", {
             "forward_auth_enabled": True,
             "provider_name": "Authentik",
@@ -576,7 +553,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertTrue(status_sso["oidc_ready"])
         self.assertEqual(status_sso["login_mode"], "oidc")
 
-        # ForwardAuth disabled + OIDC enabled + legacy "Reverse Proxy" provider normalizes to "SSO"
         database.set_system_setting("sso_config", {
             "forward_auth_enabled": False,
             "provider_name": "Reverse Proxy",
@@ -607,13 +583,11 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
             "default_role": "member",
         })
 
-        # 1. Without proxy headers -> redirect back to /admin/login with ?error=
         no_hdr = self.client.get("/api/auth/sso/login?next=/", environ_base={"REMOTE_ADDR": "192.168.1.99"})
         self.assertEqual(no_hdr.status_code, 302)
         loc_err = no_hdr.headers.get("Location", "")
         self.assertIn("/login?error=", loc_err)
 
-        # 2. With trusted ForwardAuth headers -> establishes session & redirects to next target
         with_hdr = self.client.get(
             "/api/auth/sso/login?next=/",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -632,10 +606,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
 
     def test_13_native_oidc_authorization_code_flow(self):
         """Full Native OIDC flow: discovery, redirect with state, code exchange, claims resolution, provisioning, and session."""
-        import base64
-        from urllib.parse import urlparse, parse_qs
-        from unittest.mock import patch, MagicMock
-
         database.set_system_setting("sso_config", {
             "forward_auth_enabled": False,
             "provider_name": "Authentik",
@@ -694,12 +664,10 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
 
         with patch("routes.admin_auth.requests.get", side_effect=fake_get), \
              patch("routes.admin_auth.requests.post", side_effect=fake_post):
-            # Step 1: Unified /api/auth/sso/login routes to /api/auth/oidc/login
             disp_res = self.client.get("/api/auth/sso/login?next=/admin")
             self.assertEqual(disp_res.status_code, 302)
             self.assertIn("/api/auth/oidc/login?next=/admin", disp_res.headers.get("Location", ""))
 
-            # Step 2: /api/auth/oidc/login redirects to IdP authorization_endpoint with PKCE & groups scope
             login_res = self.client.get("/api/auth/oidc/login?next=/admin")
             self.assertEqual(login_res.status_code, 302)
             auth_location = login_res.headers.get("Location", "")
@@ -712,12 +680,10 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
             self.assertIn("groups", qs.get("scope", [""])[0].split())
             state = qs["state"][0]
 
-            # Step 3: Callback with forged state is rejected cleanly
             bad_cb = self.client.get("/api/auth/oidc/callback?code=c1&state=forged_state")
             self.assertEqual(bad_cb.status_code, 302)
             self.assertIn("/login?error=", bad_cb.headers.get("Location", ""))
 
-            # Step 4: Callback with valid code & state uses single client_secret_post auth + code_verifier
             ok_cb = self.client.get(f"/api/auth/oidc/callback?code=authcode_xyz&state={state}")
             self.assertEqual(ok_cb.status_code, 302)
             self.assertEqual(ok_cb.headers.get("Location"), "/admin")
@@ -726,7 +692,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
             self.assertEqual(captured_posts[0]["data"].get("client_secret"), "sd-oidc-secret")
             self.assertTrue(captured_posts[0]["data"].get("code_verifier"))
 
-        # Verify session and persisted user
         me_res = self.client.get("/api/auth/me")
         self.assertEqual(me_res.status_code, 200)
         me_data = me_res.get_json()
@@ -740,7 +705,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertTrue(status_res.get_json()["portal_authenticated"])
         self.assertEqual(status_res.get_json()["user"]["auth_type"], "oidc")
 
-        # Step 5: Non-admin OIDC user logging in with default/admin next URL redirects to Parent Portal ("/")
         with self.client.session_transaction() as sess:
             sess.clear()
         current_userinfo.update({
@@ -763,7 +727,6 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         self.assertTrue(mem_status["portal_authenticated"])
         self.assertEqual(mem_status["portal_user"]["role"], "member")
 
-        # Step 6: External OIDC logout_url automatically appends post_logout_redirect_uri + id_token_hint
         cfg_ext = database.get_sso_config()
         cfg_ext["logout_url"] = "https://auth.example.com/application/o/storydeck/end-session/"
         database.set_system_setting("sso_config", cfg_ext)
@@ -772,6 +735,22 @@ class TestUIOverhaulAndSSO(unittest.TestCase):
         logout_data = logout_res.get_json()
         self.assertIn("post_logout_redirect_uri=https%3A%2F%2Fstorydeck.example.com%2Flogin", logout_data.get("logout_url", ""))
         self.assertIn("id_token_hint=", logout_data.get("logout_url", ""))
+
+    def test_14_user_profile_self_service_display_name_and_password_update(self):
+        """Covers routes/user_profile.py self-service display name update and password change validation."""
+        u = database.create_admin_user("sso_ui_self_svc", "OldSelfPass1!", display_name="Before", role="member")
+        self._login_session(role="member", user_id=u["id"], username=u["username"])
+
+        bad_pw = self.client.put("/api/auth/me", json={"password": "short"})
+        self.assertEqual(bad_pw.status_code, 400)
+
+        ok_res = self.client.put("/api/auth/me", json={
+            "display_name": "Updated Sitter",
+            "password": "NewSelfPass2!",
+        })
+        self.assertEqual(ok_res.status_code, 200)
+        self.assertEqual(ok_res.get_json()["user"]["display_name"], "Updated Sitter")
+        self.assertIsNotNone(database.authenticate_user("sso_ui_self_svc", "NewSelfPass2!"))
 
 
 if __name__ == "__main__":

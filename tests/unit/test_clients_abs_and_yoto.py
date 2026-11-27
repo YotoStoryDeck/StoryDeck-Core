@@ -1,20 +1,18 @@
-"""
-Isolated unit tests for Yoto OAuth 2.0 PKCE automatic callback exchange,
-multi-worker SQLite flow storage, and reverse-proxy HTTPS / origin detection.
-"""
-import tests.test_isolation  # noqa: F401 - must precede app/database/clients imports
-
+"""Unit tests for Yoto Cloud OAuth PKCE flow and ABS/Yoto client modules (zero network calls)."""
 import unittest
 from unittest.mock import MagicMock, patch
 
+from tests.harness import IsolatedTestCase
 from app import app
-import database
 import clients
+from clients.abs_client import ABSClient
+import database
 import routes.yoto_oauth as yoto_oauth
 
 
-class TestYotoOAuthFlow(unittest.TestCase):
+class TestYotoOAuthFlow(IsolatedTestCase):
     def setUp(self):
+        super().setUp()
         self.app = app.test_client()
         self.app_context = app.app_context()
         self.app_context.push()
@@ -34,16 +32,14 @@ class TestYotoOAuthFlow(unittest.TestCase):
         database.update_api_credentials(self.orig_creds)
         clients.reload_clients()
         self.app_context.pop()
+        super().tearDown()
 
     def test_01_reverse_proxy_https_detection(self):
         """Verifies X-Forwarded-Proto/Host resolves to https://<host>/s/yoto-callback."""
         res = self.app.post(
             "/api/admin/yoto/oauth/start",
             json={"client_id": "pub_client_https"},
-            headers={
-                "X-Forwarded-Proto": "https",
-                "X-Forwarded-Host": "storydeck.example.com"
-            }
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "storydeck.example.com"},
         )
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
@@ -54,10 +50,7 @@ class TestYotoOAuthFlow(unittest.TestCase):
     def test_02_client_origin_loopback_and_plain_http_lan_fallback(self):
         """Verifies loopback origins auto-callback while plain HTTP LAN IPs use :8787 fallback."""
         for origin in ("http://127.0.0.1:5055", "http://localhost:5055"):
-            res = self.app.post(
-                "/api/admin/yoto/oauth/start",
-                json={"client_id": "pub_client_local", "client_origin": origin}
-            )
+            res = self.app.post("/api/admin/yoto/oauth/start", json={"client_id": "pub_client_local", "client_origin": origin})
             self.assertEqual(res.status_code, 200)
             data = res.get_json()
             self.assertEqual(data["redirect_uri"], f"{origin}/s/yoto-callback")
@@ -65,7 +58,7 @@ class TestYotoOAuthFlow(unittest.TestCase):
 
         res_lan = self.app.post(
             "/api/admin/yoto/oauth/start",
-            json={"client_id": "pub_client_lan", "client_origin": "http://192.168.1.50:5055"}
+            json={"client_id": "pub_client_lan", "client_origin": "http://192.168.1.50:5055"},
         )
         self.assertEqual(res_lan.status_code, 200)
         lan_data = res_lan.get_json()
@@ -76,16 +69,12 @@ class TestYotoOAuthFlow(unittest.TestCase):
         """Verifies GET /s/yoto-callback exchanges PKCE code directly without client_secret."""
         start_res = self.app.post(
             "/api/admin/yoto/oauth/start",
-            json={"client_id": "pub_client_auto", "client_origin": "https://storydeck.example.com"}
+            json={"client_id": "pub_client_auto", "client_origin": "https://storydeck.example.com"},
         )
         state = start_res.get_json()["state"]
 
         mock_resp = MagicMock(status_code=200)
-        mock_resp.json.return_value = {
-            "access_token": "acc_token_auto",
-            "refresh_token": "ref_token_auto_987",
-            "expires_in": 3600
-        }
+        mock_resp.json.return_value = {"access_token": "acc_token_auto", "refresh_token": "ref_token_auto_987", "expires_in": 3600}
 
         with patch("routes.yoto_oauth.requests.post", return_value=mock_resp) as mock_post:
             cb_res = self.app.get(f"/s/yoto-callback?code=auth_code_123&state={state}")
@@ -109,59 +98,42 @@ class TestYotoOAuthFlow(unittest.TestCase):
 
         status_res = self.app.get(f"/api/admin/yoto/oauth/status?state={state}")
         self.assertEqual(status_res.status_code, 200)
-        status_data = status_res.get_json()
-        self.assertEqual(status_data["status"], "completed")
+        self.assertEqual(status_res.get_json()["status"], "completed")
 
     def test_04_multi_worker_sqlite_flow_persistence(self):
         """Clearing in-memory YOTO_PKCE_FLOWS simulates a second Gunicorn worker handling callback."""
         start_res = self.app.post(
             "/api/admin/yoto/oauth/start",
-            json={"client_id": "pub_client_worker2", "client_origin": "http://localhost:5055"}
+            json={"client_id": "pub_client_worker2", "client_origin": "http://localhost:5055"},
         )
         state = start_res.get_json()["state"]
-
-        # Simulate different worker process having empty in-memory dict
         yoto_oauth.YOTO_PKCE_FLOWS.clear()
 
         mock_resp = MagicMock(status_code=200)
-        mock_resp.json.return_value = {
-            "access_token": "acc_worker2",
-            "refresh_token": "ref_worker2_abc",
-            "expires_in": 3600
-        }
+        mock_resp.json.return_value = {"access_token": "acc_worker2", "refresh_token": "ref_worker2_abc", "expires_in": 3600}
 
         with patch("routes.yoto_oauth.requests.post", return_value=mock_resp):
             cb_res = self.app.get(f"/s/yoto-callback?code=worker2_code&state={state}")
 
         self.assertEqual(cb_res.status_code, 200)
-        creds = database.get_api_credentials()
-        self.assertEqual(creds["yoto_refresh_token"], "ref_worker2_abc")
+        self.assertEqual(database.get_api_credentials()["yoto_refresh_token"], "ref_worker2_abc")
 
     def test_05_idempotent_finish_after_callback_completion(self):
         """Calling /finish after /s/yoto-callback completed returns 200 without re-calling Auth0."""
         start_res = self.app.post(
             "/api/admin/yoto/oauth/start",
-            json={"client_id": "pub_client_idem", "client_origin": "https://storydeck.example.com"}
+            json={"client_id": "pub_client_idem", "client_origin": "https://storydeck.example.com"},
         )
         state = start_res.get_json()["state"]
 
         mock_resp = MagicMock(status_code=200)
-        mock_resp.json.return_value = {
-            "access_token": "acc_idem",
-            "refresh_token": "ref_idem_111",
-            "expires_in": 3600
-        }
+        mock_resp.json.return_value = {"access_token": "acc_idem", "refresh_token": "ref_idem_111", "expires_in": 3600}
 
         with patch("routes.yoto_oauth.requests.post", return_value=mock_resp) as mock_post:
-            cb_res = self.app.get(f"/s/yoto-callback?code=idem_code&state={state}")
-            self.assertEqual(cb_res.status_code, 200)
+            self.assertEqual(self.app.get(f"/s/yoto-callback?code=idem_code&state={state}").status_code, 200)
             mock_post.assert_called_once()
-
             mock_post.reset_mock()
-            fin_res = self.app.post(
-                "/api/admin/yoto/oauth/finish",
-                json={"url_or_code": "idem_code", "state": state}
-            )
+            fin_res = self.app.post("/api/admin/yoto/oauth/finish", json={"url_or_code": "idem_code", "state": state})
             self.assertEqual(fin_res.status_code, 200)
             self.assertTrue(fin_res.get_json()["ok"])
             mock_post.assert_not_called()
@@ -170,25 +142,19 @@ class TestYotoOAuthFlow(unittest.TestCase):
         """Verifies manual copy-paste of http://127.0.0.1:8787/callback?code=... completes flow."""
         start_res = self.app.post(
             "/api/admin/yoto/oauth/start",
-            json={"client_id": "pub_client_manual", "client_origin": "http://192.168.1.50:5055"}
+            json={"client_id": "pub_client_manual", "client_origin": "http://192.168.1.50:5055"},
         )
         start_data = start_res.get_json()
         state = start_data["state"]
         self.assertFalse(start_data["auto_callback"])
 
         mock_resp = MagicMock(status_code=200)
-        mock_resp.json.return_value = {
-            "access_token": "acc_manual",
-            "refresh_token": "ref_manual_xyz",
-            "expires_in": 3600
-        }
+        mock_resp.json.return_value = {"access_token": "acc_manual", "refresh_token": "ref_manual_xyz", "expires_in": 3600}
 
         with patch("routes.yoto_oauth.requests.post", return_value=mock_resp) as mock_post:
             fin_res = self.app.post(
                 "/api/admin/yoto/oauth/finish",
-                json={
-                    "url_or_code": f"http://127.0.0.1:8787/callback?code=manual_xyz&state={state}"
-                }
+                json={"url_or_code": f"http://127.0.0.1:8787/callback?code=manual_xyz&state={state}"},
             )
 
         self.assertEqual(fin_res.status_code, 200)
@@ -196,9 +162,69 @@ class TestYotoOAuthFlow(unittest.TestCase):
         sent_payload = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent_payload["redirect_uri"], "http://127.0.0.1:8787/callback")
         self.assertNotIn("client_secret", sent_payload)
+        self.assertEqual(database.get_api_credentials()["yoto_refresh_token"], "ref_manual_xyz")
 
-        creds = database.get_api_credentials()
-        self.assertEqual(creds["yoto_refresh_token"], "ref_manual_xyz")
+
+class TestABSClientScopingUnit(IsolatedTestCase):
+    """Mocked unit tests for modular clients/abs/{users,library,progress}.py."""
+
+    def test_01_get_user_token_and_audio_only_filter(self):
+        """Verifies get_user_token resolution and strict ABSClient.is_valid_audio_item filtering."""
+        abs_cli = ABSClient("http://abs.test.invalid:13378", "master_key_unit")
+        users_resp = MagicMock(status_code=200)
+        users_resp.json.return_value = {
+            "users": [
+                {"id": "u1", "username": "child_a", "token": "child_a_jwt_tok_123456", "type": "user", "isActive": True},
+                {"id": "u2", "username": "child_b", "token": "child_b_jwt_tok_123456", "type": "user", "isActive": True},
+            ]
+        }
+        with patch("clients.abs_client.requests.get", return_value=users_resp):
+            self.assertEqual(abs_cli.get_user_token("child_a"), "child_a_jwt_tok_123456")
+            self.assertEqual(abs_cli.get_user_token("child_b"), "child_b_jwt_tok_123456")
+            self.assertIsNone(abs_cli.get_user_token("nonexistent"))
+
+        self.assertTrue(ABSClient.is_valid_audio_item({"mediaType": "book", "media": {"duration": 300.0, "numAudioFiles": 2, "metadata": {"title": "Audio Book"}}}))
+        self.assertFalse(ABSClient.is_valid_audio_item({"mediaType": "book", "media": {"duration": 0.0, "numAudioFiles": 0, "numEbooks": 1, "metadata": {"title": "PDF Only"}}}))
+        self.assertFalse(ABSClient.is_valid_audio_item({"isMissing": True, "mediaType": "book", "media": {"duration": 300.0, "numAudioFiles": 1, "metadata": {"title": "Missing Book"}}}))
+        self.assertFalse(ABSClient.is_valid_audio_item({"mediaType": "book", "media": {"duration": 0.0, "numAudioFiles": 1, "metadata": {"title": "Zero Duration"}}}))
+
+    def test_02_get_items_for_profile_scopes_with_user_token(self):
+        """Verifies get_items_for_profile queries ABS with resolved child token and filters by audio."""
+        abs_cli = ABSClient("http://abs.test.invalid:13378", "master_key_unit")
+        abs_cli.get_user_token = MagicMock(return_value="child_scoped_tok")
+        abs_cli.get_libraries = MagicMock(return_value=[{"id": "lib_books", "mediaType": "book"}])
+
+        items_resp = MagicMock(status_code=200)
+        items_resp.json.return_value = {
+            "results": [
+                {
+                    "id": "b1",
+                    "mediaType": "book",
+                    "media": {
+                        "duration": 1800.0,
+                        "numAudioFiles": 1,
+                        "tags": ["Children"],
+                        "metadata": {"title": "Kid Audiobook", "authorName": "Author K"},
+                    },
+                },
+                {
+                    "id": "e1",
+                    "mediaType": "book",
+                    "media": {
+                        "duration": 0.0,
+                        "numAudioFiles": 0,
+                        "numEbooks": 1,
+                        "metadata": {"title": "Ebook Only", "authorName": "Author E"},
+                    },
+                },
+            ]
+        }
+        with patch("clients.abs_client.requests.get", return_value=items_resp) as mock_get:
+            scoped = abs_cli.get_items_for_profile({"abs_username": "child_a"})
+
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual(scoped[0]["id"], "b1")
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer child_scoped_tok")
 
 
 if __name__ == "__main__":

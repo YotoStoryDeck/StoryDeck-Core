@@ -1,15 +1,15 @@
-"""
-Unit tests for Primary Super Admin protection and full user profile management by administrators.
-"""
-import tests.test_isolation  # noqa: F401 - must precede app/database imports
+"""Unit tests for RBAC, trusted LAN auth, Primary Super Admin guards, and user CRUD."""
+import json
 import sqlite3
 import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
+from tests.harness import IsolatedTestCase
 from app import app
 import database
+from core.auth import is_trusted_lan_ip
 
 
 class _FormPasswordParser(HTMLParser):
@@ -35,21 +35,14 @@ class _FormPasswordParser(HTMLParser):
             self.form_depth -= 1
 
 
-class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        app.config["TESTING"] = True
-        database.init_db()
-
+class TestRBACAndLANAuth(IsolatedTestCase):
     def setUp(self):
+        super().setUp()
         self.client = app.test_client()
         conn = database.get_db_connection()
         try:
-            self._saved_users = [
-                dict(r) for r in conn.execute("SELECT * FROM admin_users;").fetchall()
-            ]
             with conn:
-                conn.execute("DELETE FROM admin_users;")
+                conn.execute("DELETE FROM admin_users WHERE username LIKE 'test_%';")
         finally:
             conn.close()
 
@@ -57,33 +50,177 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         conn = database.get_db_connection()
         try:
             with conn:
-                conn.execute("DELETE FROM admin_users;")
-                for u in self._saved_users:
-                    conn.execute(
-                        """
-                        INSERT INTO admin_users (
-                            id, username, password_hash, salt, display_name, email, role,
-                            sso_provider, sso_subject, is_super_admin, last_login, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                        """,
-                        (
-                            u["id"],
-                            u["username"],
-                            u["password_hash"],
-                            u["salt"],
-                            u.get("display_name", ""),
-                            u.get("email", ""),
-                            u.get("role", "admin"),
-                            u.get("sso_provider", ""),
-                            u.get("sso_subject", ""),
-                            u.get("is_super_admin", 0),
-                            u.get("last_login"),
-                            u.get("created_at"),
-                            u.get("updated_at"),
-                        ),
-                    )
+                conn.execute("DELETE FROM admin_users WHERE username LIKE 'test_%';")
         finally:
             conn.close()
+        super().tearDown()
+
+    def test_01_is_trusted_lan_ip(self):
+        """Verifies RFC1918 private subnets and loopback are identified as trusted LAN."""
+        self.assertTrue(is_trusted_lan_ip("127.0.0.1"))
+        self.assertTrue(is_trusted_lan_ip("::1"))
+        self.assertTrue(is_trusted_lan_ip("192.168.1.50"))
+        self.assertTrue(is_trusted_lan_ip("192.168.0.1"))
+        self.assertTrue(is_trusted_lan_ip("10.0.1.15"))
+        self.assertTrue(is_trusted_lan_ip("172.16.0.1"))
+        self.assertTrue(is_trusted_lan_ip("172.31.255.255"))
+
+        self.assertFalse(is_trusted_lan_ip("8.8.8.8"))
+        self.assertFalse(is_trusted_lan_ip("1.1.1.1"))
+        self.assertFalse(is_trusted_lan_ip("104.28.1.1"))
+        self.assertFalse(is_trusted_lan_ip("172.32.0.1"))
+        self.assertFalse(is_trusted_lan_ip(""))
+        self.assertFalse(is_trusted_lan_ip("invalid_ip"))
+
+    def test_02_database_user_roles_and_helpers(self):
+        """Verifies admin vs member user creation, updates, and deletion rules."""
+        admin_u = database.create_admin_user("test_admin_1", "Password123!", display_name="Admin One", role="admin")
+        self.assertEqual(admin_u["role"], "admin")
+
+        member_u = database.create_admin_user("test_member_1", "Password123!", display_name="Member One", role="member")
+        self.assertEqual(member_u["role"], "member")
+
+        fetched_member = database.get_user_by_id(member_u["id"])
+        self.assertIsNotNone(fetched_member)
+        self.assertEqual(fetched_member["username"], "test_member_1")
+        self.assertEqual(fetched_member["role"], "member")
+
+        self.assertTrue(database.update_user_role(member_u["id"], "admin"))
+        updated = database.get_user_by_id(member_u["id"])
+        self.assertEqual(updated["role"], "admin")
+
+        self.assertTrue(database.update_user_password(member_u["id"], "NewPassword456!"))
+        auth_res = database.authenticate_user("test_member_1", "NewPassword456!")
+        self.assertIsNotNone(auth_res)
+        self.assertIsNone(database.authenticate_user("test_member_1", "Password123!"))
+
+        self.assertTrue(database.delete_user(member_u["id"]))
+        self.assertIsNone(database.get_user_by_id(member_u["id"]))
+
+    def test_03_prevent_deleting_last_admin(self):
+        """Verifies that the database layer refuses to delete the last remaining administrator."""
+        conn = database.get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM admin_users WHERE role = 'admin';")
+            admins = cur.fetchall()
+            if len(admins) == 1:
+                with self.assertRaises(ValueError):
+                    database.delete_user(admins[0]["id"])
+        finally:
+            conn.close()
+
+    def test_04_auth_me_lan_guest_vs_remote(self):
+        """Verifies /api/auth/me detects LAN guest on RFC1918 IPs and blocks remote WAN without session."""
+        res_lan = self.client.get("/api/auth/me", environ_base={"REMOTE_ADDR": "192.168.1.88"})
+        self.assertEqual(res_lan.status_code, 200)
+        data_lan = json.loads(res_lan.data)
+        self.assertTrue(data_lan["authenticated"])
+        self.assertEqual(data_lan["user"]["role"], "guest")
+        self.assertTrue(data_lan["user"]["is_lan_guest"])
+
+        res_wan = self.client.get("/api/auth/me", environ_base={"REMOTE_ADDR": "8.8.8.8"})
+        self.assertEqual(res_wan.status_code, 200)
+        data_wan = json.loads(res_wan.data)
+        self.assertFalse(data_wan["authenticated"])
+        self.assertIsNone(data_wan["user"])
+
+    def test_05_admin_users_api_rbac(self):
+        """Verifies that /api/admin/users strictly enforces role == 'admin'."""
+        admin_u = database.create_admin_user("test_admin_2", "AdminPass123!", display_name="Admin Two", role="admin")
+        member_u = database.create_admin_user("test_member_2", "MemberPass123!", display_name="Member Two", role="member")
+
+        res_lan = self.client.get("/api/admin/users", environ_base={"REMOTE_ADDR": "192.168.1.88"})
+        self.assertEqual(res_lan.status_code, 401)
+
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = member_u["id"]
+            sess["username"] = member_u["username"]
+            sess["role"] = member_u["role"]
+
+        res_member = self.client.get("/api/admin/users")
+        self.assertEqual(res_member.status_code, 403)
+
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = admin_u["id"]
+            sess["username"] = admin_u["username"]
+            sess["role"] = admin_u["role"]
+
+        res_admin = self.client.get("/api/admin/users")
+        self.assertEqual(res_admin.status_code, 200)
+        users_data = json.loads(res_admin.data)
+        self.assertTrue(users_data["ok"])
+        usernames = [u["username"] for u in users_data["users"]]
+        self.assertIn("test_admin_2", usernames)
+        self.assertIn("test_member_2", usernames)
+
+    def test_06_admin_create_update_delete_user_api(self):
+        """Tests admin API CRUD operations for users."""
+        admin_u = database.create_admin_user("test_admin_3", "AdminPass123!", display_name="Admin Three", role="admin")
+
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = admin_u["id"]
+            sess["username"] = admin_u["username"]
+            sess["role"] = admin_u["role"]
+
+        create_res = self.client.post("/api/admin/users", json={
+            "username": "test_created_user",
+            "password": "SecurePassword123!",
+            "display_name": "Created Sitter",
+            "role": "member"
+        })
+        self.assertEqual(create_res.status_code, 201)
+        created_data = json.loads(create_res.data)
+        self.assertTrue(created_data["ok"])
+        created_id = created_data["user"]["id"]
+
+        update_res = self.client.put(f"/api/admin/users/{created_id}", json={
+            "display_name": "Updated Sitter Name",
+            "role": "member"
+        })
+        self.assertEqual(update_res.status_code, 200)
+        updated_data = json.loads(update_res.data)
+        self.assertEqual(updated_data["user"]["display_name"], "Updated Sitter Name")
+
+        del_res = self.client.delete(f"/api/admin/users/{created_id}")
+        self.assertEqual(del_res.status_code, 200)
+        del_data = json.loads(del_res.data)
+        self.assertTrue(del_data["ok"])
+
+    def test_07_schema_version_10_elements(self):
+        """Verifies schema version 10 tables and profile playback columns exist."""
+        conn = database.get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("PRAGMA user_version;")
+            version = cur.fetchone()[0]
+            self.assertGreaterEqual(version, 10)
+
+            cur.execute("PRAGMA table_info(profiles);")
+            cols = [c[1] for c in cur.fetchall()]
+            self.assertIn("default_playback_mode", cols)
+            self.assertIn("primary_card_id", cols)
+            self.assertIn("offline_retention_limit", cols)
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='bridge_slots';")
+            self.assertIsNotNone(cur.fetchone())
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='bridge_tracks';")
+            self.assertIsNotNone(cur.fetchone())
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='profile_catalog_permissions';")
+            self.assertIsNotNone(cur.fetchone())
+        finally:
+            conn.close()
+
+
+class TestSuperAdminAndUserProfileManagement(IsolatedTestCase):
+    reset_db_per_test = True
+
+    def setUp(self):
+        super().setUp()
+        app.config["TESTING"] = True
+        self.client = app.test_client()
 
     def _login_user(self, user_dict):
         with self.client.session_transaction() as sess:
@@ -183,7 +320,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         self.assertFalse(super_row["can_change_role"])
         self.assertFalse(super_row["can_delete"])
 
-        # Attempt PUT updates (display_name, username, role, password, sso_provider) -> 403
         for payload in (
             {"display_name": "Hijacked Name"},
             {"username": "hijacked_user"},
@@ -194,11 +330,9 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
             put_res = self.client.put(f"/api/admin/users/{super_u['id']}", json=payload)
             self.assertEqual(put_res.status_code, 403, f"Expected 403 for {payload}, got {put_res.status_code}")
 
-        # Attempt DELETE -> 403
         del_res = self.client.delete(f"/api/admin/users/{super_u['id']}")
         self.assertEqual(del_res.status_code, 403)
 
-        # Verify Super Admin record remained completely untouched
         still_super = database.get_user_by_id(super_u["id"])
         self.assertEqual(still_super["username"], "sa_primary")
         self.assertEqual(still_super["display_name"], "Founder")
@@ -214,7 +348,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
 
         self._login_user(reg_actor)
 
-        # Duplicate username rejected with 409 without mutating target
         dup_res = self.client.put(f"/api/admin/users/{other_admin['id']}", json={
             "username": "sa_founder",
             "display_name": "Should Not Apply",
@@ -222,7 +355,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         self.assertEqual(dup_res.status_code, 409)
         self.assertEqual(database.get_user_by_id(other_admin["id"])["display_name"], "Peer Admin")
 
-        # Edit another regular admin's profile & demote to member
         edit_peer = self.client.put(f"/api/admin/users/{other_admin['id']}", json={
             "username": "reg_peer_renamed",
             "display_name": "Updated Peer",
@@ -238,7 +370,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         self.assertEqual(u_peer["sso_provider"], "authentik")
         self.assertIsNotNone(database.authenticate_user("reg_peer_renamed", "UpdatedPeerPass2!"))
 
-        # Promote member to admin & delete peer
         prom_res = self.client.put(f"/api/admin/users/{member_u['id']}", json={"role": "admin"})
         self.assertEqual(prom_res.status_code, 200)
         self.assertEqual(prom_res.get_json()["user"]["role"], "admin")
@@ -247,7 +378,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         self.assertEqual(del_peer.status_code, 200)
         self.assertIsNone(database.get_user_by_id(other_admin["id"]))
 
-        # Actor cannot demote or delete self (400)
         self.assertEqual(self.client.put(f"/api/admin/users/{reg_actor['id']}", json={"role": "member"}).status_code, 400)
         self.assertEqual(self.client.delete(f"/api/admin/users/{reg_actor['id']}").status_code, 400)
 
@@ -257,7 +387,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         other_admin = database.create_admin_user("co_owner", "CoPass1!", "Co Owner", role="admin")
         self._login_user(super_u)
 
-        # Manage other admin
         res_other = self.client.put(f"/api/admin/users/{other_admin['id']}", json={
             "display_name": "Managed Co-Owner",
             "role": "member",
@@ -265,7 +394,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         self.assertEqual(res_other.status_code, 200)
         self.assertEqual(res_other.get_json()["user"]["role"], "member")
 
-        # Update own display name & password
         res_self = self.client.put(f"/api/admin/users/{super_u['id']}", json={
             "display_name": "Updated Super Owner",
             "password": "SuperOwnerNew2!",
@@ -274,7 +402,6 @@ class TestSuperAdminAndUserProfileManagement(unittest.TestCase):
         self.assertEqual(res_self.get_json()["user"]["display_name"], "Updated Super Owner")
         self.assertIsNotNone(database.authenticate_user("sa_owner", "SuperOwnerNew2!"))
 
-        # Super Admin cannot be demoted or deleted even by self
         self.assertEqual(self.client.put(f"/api/admin/users/{super_u['id']}", json={"role": "member"}).status_code, 400)
         self.assertEqual(self.client.delete(f"/api/admin/users/{super_u['id']}").status_code, 400)
 
