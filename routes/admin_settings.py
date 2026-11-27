@@ -166,12 +166,16 @@ def admin_manage_catalog_settings():
     if request.method == "GET":
         settings = database.get_system_settings()
         status = get_refresh_status()
+        packing = str(settings.get("offline_series_packing") or "chapters").strip().lower()
+        if packing not in ("chapters", "condense"):
+            packing = "chapters"
         return jsonify({
             "ok": True,
             "exclude_single_card_series": bool(settings.get("exclude_single_card_series", True)),
             "auto_library_refresh_enabled": bool(settings.get("auto_library_refresh_enabled", True)),
             "auto_library_refresh_hours": float(settings.get("auto_library_refresh_hours", 6)),
             "lan_sitter_access_enabled": bool(settings.get("lan_sitter_access_enabled", True)),
+            "offline_series_packing": packing,
             "scheduler_status": status
         })
 
@@ -200,14 +204,24 @@ def admin_manage_catalog_settings():
             lan_val = bool(data.get("lan_sitter_access_enabled", True))
             database.set_system_setting("lan_sitter_access_enabled", lan_val)
 
+        if "offline_series_packing" in data:
+            pack_val = str(data.get("offline_series_packing") or "chapters").strip().lower()
+            if pack_val not in ("chapters", "condense"):
+                pack_val = "chapters"
+            database.set_system_setting("offline_series_packing", pack_val)
+
         settings = database.get_system_settings()
         status = get_refresh_status()
+        packing = str(settings.get("offline_series_packing") or "chapters").strip().lower()
+        if packing not in ("chapters", "condense"):
+            packing = "chapters"
         return jsonify({
             "ok": True,
             "exclude_single_card_series": bool(settings.get("exclude_single_card_series", True)),
             "auto_library_refresh_enabled": bool(settings.get("auto_library_refresh_enabled", True)),
             "auto_library_refresh_hours": float(settings.get("auto_library_refresh_hours", 6)),
             "lan_sitter_access_enabled": bool(settings.get("lan_sitter_access_enabled", True)),
+            "offline_series_packing": packing,
             "scheduler_status": status,
             "message": "Settings updated."
         })

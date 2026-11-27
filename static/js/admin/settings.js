@@ -88,7 +88,8 @@ function snapshotBaseline(section) {
     settingsBaseline.preferences = {
       exclude: document.getElementById("toggleExcludeSingleSeries")?.checked ?? true,
       refresh_enabled: document.getElementById("toggleAutoLibraryRefresh")?.checked ?? true,
-      refresh_hours: String(document.getElementById("autoLibraryRefreshHours")?.value || "6")
+      refresh_hours: String(document.getElementById("autoLibraryRefreshHours")?.value || "6"),
+      series_packing: String(document.getElementById("offlineSeriesPackingSelect")?.value || "chapters")
     };
   }
 }
@@ -140,10 +141,11 @@ function checkDirty(section) {
     const cur = {
       exclude: document.getElementById("toggleExcludeSingleSeries")?.checked ?? true,
       refresh_enabled: document.getElementById("toggleAutoLibraryRefresh")?.checked ?? true,
-      refresh_hours: String(document.getElementById("autoLibraryRefreshHours")?.value || "6")
+      refresh_hours: String(document.getElementById("autoLibraryRefreshHours")?.value || "6"),
+      series_packing: String(document.getElementById("offlineSeriesPackingSelect")?.value || "chapters")
     };
     const b = settingsBaseline.preferences;
-    const dirty = cur.exclude !== b.exclude || cur.refresh_enabled !== b.refresh_enabled || cur.refresh_hours !== b.refresh_hours;
+    const dirty = cur.exclude !== b.exclude || cur.refresh_enabled !== b.refresh_enabled || cur.refresh_hours !== b.refresh_hours || cur.series_packing !== b.series_packing;
     setSectionDirty("preferences", dirty);
   }
 }
@@ -174,7 +176,7 @@ function setupSettingsDirtyListeners() {
   bindSection(["credAbsUrl", "credAbsKey"], "abs", true);
   bindSection(["credTinkerKey"], "tinker", true);
   bindSection(["credOpenRouterKey"], "ai", true);
-  bindSection(["toggleExcludeSingleSeries", "toggleAutoLibraryRefresh", "autoLibraryRefreshHours"], "preferences", false);
+  bindSection(["toggleExcludeSingleSeries", "toggleAutoLibraryRefresh", "autoLibraryRefreshHours", "offlineSeriesPackingSelect"], "preferences", false);
 }
 
 async function loadApiCredentials() {
@@ -238,6 +240,11 @@ async function loadCatalogSettings() {
       selectHours.value = String(data.auto_library_refresh_hours);
     }
 
+    const selectPacking = document.getElementById("offlineSeriesPackingSelect");
+    if (selectPacking) {
+      selectPacking.value = data.offline_series_packing === "condense" ? "condense" : "chapters";
+    }
+
     onAutoRefreshToggleChange();
     renderLibraryRefreshStatus(data.scheduler_status);
   } catch (err) {
@@ -281,6 +288,7 @@ async function savePreferencesSettings() {
   const excludeVal = document.getElementById("toggleExcludeSingleSeries")?.checked ?? true;
   const refreshEnabled = document.getElementById("toggleAutoLibraryRefresh")?.checked ?? true;
   const refreshHours = parseFloat(document.getElementById("autoLibraryRefreshHours")?.value || "6.0");
+  const seriesPacking = document.getElementById("offlineSeriesPackingSelect")?.value || "chapters";
 
   try {
     const res = await fetch("/api/admin/settings/catalog", {
@@ -289,7 +297,8 @@ async function savePreferencesSettings() {
       body: JSON.stringify({
         exclude_single_card_series: excludeVal,
         auto_library_refresh_enabled: refreshEnabled,
-        auto_library_refresh_hours: refreshHours
+        auto_library_refresh_hours: refreshHours,
+        offline_series_packing: seriesPacking
       })
     });
     const data = await res.json();

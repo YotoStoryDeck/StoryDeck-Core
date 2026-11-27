@@ -345,6 +345,11 @@ function openEditCardSlotModal(slotId) {
       profSel.appendChild(opt);
     });
   }
+  const packSel = document.getElementById("editCardSeriesPacking");
+  if (packSel) {
+    const sp = String(slot.series_packing || "").toLowerCase();
+    packSel.value = (sp === "chapters" || sp === "condense") ? sp : "";
+  }
   onEditCardKindChange();
   modal.style.display = "flex";
 }
@@ -366,6 +371,7 @@ async function saveEditedCardSlot() {
   const nickname = document.getElementById("editCardNickname")?.value.trim() || "";
   const kind = document.getElementById("editCardKind")?.value || "permanent_myo";
   const ownerProfileId = kind === "profile_primary" ? (document.getElementById("editCardOwnerProfile")?.value || "") : "";
+  const seriesPacking = document.getElementById("editCardSeriesPacking")?.value || "";
   if (!slotId || !nickname || !newSlotId) return;
   const btn = document.getElementById("btnSaveEditCardSlot");
   if (btn) { btn.disabled = true; btn.innerText = "Saving..."; }
@@ -373,7 +379,13 @@ async function saveEditedCardSlot() {
     const res = await fetch(`/api/cards/${encodeURIComponent(slotId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ new_slot_id: newSlotId, nickname, kind, owner_profile_id: ownerProfileId })
+      body: JSON.stringify({
+        new_slot_id: newSlotId,
+        nickname,
+        kind,
+        owner_profile_id: ownerProfileId,
+        series_packing: seriesPacking
+      })
     });
     if (res.ok) {
       closeEditCardSlotModal();

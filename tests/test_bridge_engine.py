@@ -492,6 +492,261 @@ class TestBridgeEngine(unittest.TestCase):
         self.assertAlmostEqual(matches[3].start, 0.0, places=1)
         self.assertAlmostEqual(matches[4].start, 500.0, places=1)
 
+    def test_offline_series_chapters_mode_whole_books_and_rolling(self):
+        """Verifies default offline series mode keeps chapters intact, loads whole books <= 100 tracks, and rolls finished books."""
+        from core.bridge.offline import get_offline_manager, refresh_offline_series_slots
+
+        series_items = []
+        abs_items_by_id = {}
+        for idx in range(1, 5):
+            bid = f"ser_roll_b{idx}"
+            title = f"Test Saga Book {idx}"
+            chapters = [
+                {"start": i * 600.0, "end": (i + 1) * 600.0, "title": f"Chapter {i + 1}"}
+                for i in range(30)
+            ]
+            series_items.append({
+                "id": bid,
+                "type": "abs",
+                "title": title,
+                "author": "Author",
+                "raw_metadata": {
+                    "series": "Test Saga",
+                    "series_order": str(idx),
+                    "series_list": [{"name": "Test Saga", "order": str(idx)}],
+                    "duration": 30 * 600.0,
+                },
+            })
+            abs_items_by_id[bid] = {
+                "id": bid,
+                "media": {
+                    "duration": 30 * 600.0,
+                    "metadata": {"title": title, "seriesName": f"Test Saga #{idx}"},
+                    "chapters": chapters,
+                },
+            }
+
+        database.upsert_media_items(series_items)
+        old_packing = database.get_system_settings().get("offline_series_packing")
+        database.set_system_setting("offline_series_packing", "chapters")
+        try:
+            mgr = get_bridge_manager()
+            with patch.object(clients.abs_client, "get_item", side_effect=lambda item_id, token=None: abs_items_by_id.get(item_id)), \
+                 patch.object(clients.abs_client, "get_media_progress", return_value={}):
+                slot = mgr.assign_abs_book_to_slot(
+                    slot_id="slot_series_roll",
+                    abs_item_id="ser_roll_b1",
+                    title="Test Saga Book 1",
+                    series_name="Test Saga",
+                    group_kind="series",
+                    mode="offline",
+                )
+                with database.get_db_connection() as conn:
+                    conn.execute(
+                        "UPDATE bridge_slots SET offline_mode = 'series' WHERE slot_id = ?;",
+                        ("slot_series_roll",),
+                    )
+                    conn.commit()
+                slot = mgr.get_slot("slot_series_roll")
+
+                planned, meta = get_offline_manager()._plan_offline_tracks(
+                    slot, submode="series", hours=5.0, speed=1.0, abs_token=None, base_url="http://localhost:5055"
+                )
+                self.assertEqual(meta["mode"], "series")
+                self.assertEqual(meta["series_packing"], "chapters")
+                # Books 1-3 = 90 uncondensed chapters (<= 100); Book 4 would push to 120 so it is held back intact.
+                self.assertEqual(meta["books"], ["ser_roll_b1", "ser_roll_b2", "ser_roll_b3"])
+                self.assertEqual(meta["books_left_off"], 1)
+                self.assertEqual(len(planned), 90)
+                self.assertFalse(any(" – " in t["title"] for t in planned))
+                self.assertEqual(planned[0]["title"], "Test Saga Book 1: Chapter 1")
+                self.assertEqual(planned[-1]["title"], "Test Saga Book 3: Chapter 30")
+
+                # Simulate Books 2 & 3 already uploaded on card with cached Yoto SHA hashes
+                with database.get_db_connection() as conn:
+                    conn.execute(
+                        "UPDATE bridge_tracks SET yoto_sha256 = 'sha_' || abs_item_id || '_' || track_idx "
+                        "WHERE slot_id = 'slot_series_roll' AND abs_item_id IN ('ser_roll_b2', 'ser_roll_b3');"
+                    )
+                    conn.execute("UPDATE bridge_slots SET offline_status = 'ready' WHERE slot_id = 'slot_series_roll';")
+                    conn.commit()
+
+            # Mark Book 1 finished in ABS progress; verify rolling check detects finish and queues refresh
+            def _prog_after_b1(item_id, token=None, **kwargs):
+                if item_id == "ser_roll_b1":
+                    return {"currentTime": 18000.0, "isFinished": True, "lastUpdate": 2000}
+                return {}
+
+            with patch.object(clients.abs_client, "get_item", side_effect=lambda item_id, token=None: abs_items_by_id.get(item_id)), \
+                 patch.object(clients.abs_client, "get_media_progress", side_effect=_prog_after_b1):
+                with patch.object(get_offline_manager(), "queue_transcode") as mock_queue:
+                    rolled = refresh_offline_series_slots()
+                    self.assertEqual(rolled, 1)
+                    mock_queue.assert_called_once()
+                    self.assertEqual(mock_queue.call_args.args[0], "slot_series_roll")
+
+                # Now execute planning after refresh rolled slot to Book 2 -> Books 2, 3, 4 fit (90 tracks) and reuse SHAs for B2 & B3
+                updated_slot = mgr.get_slot("slot_series_roll")
+                self.assertEqual(updated_slot["abs_item_id"], "ser_roll_b2")
+                planned2, meta2 = get_offline_manager()._plan_offline_tracks(
+                    updated_slot, submode="series", hours=5.0, speed=1.0, abs_token=None, base_url="http://localhost:5055"
+                )
+                self.assertEqual(meta2["books"], ["ser_roll_b2", "ser_roll_b3", "ser_roll_b4"])
+                self.assertEqual(meta2["books_left_off"], 0)
+                self.assertEqual(len(planned2), 90)
+                b2_shas = [t["yoto_sha256"] for t in planned2 if t["abs_item_id"] == "ser_roll_b2"]
+                b4_shas = [t["yoto_sha256"] for t in planned2 if t["abs_item_id"] == "ser_roll_b4"]
+                self.assertTrue(all(b2_shas))
+                self.assertTrue(all(not s for s in b4_shas))
+        finally:
+            if old_packing is None:
+                with database.get_db_connection() as conn:
+                    conn.execute("DELETE FROM system_settings WHERE key = 'offline_series_packing';")
+                    conn.commit()
+            else:
+                database.set_system_setting("offline_series_packing", old_packing)
+            with database.get_db_connection() as conn:
+                conn.execute("DELETE FROM media_items WHERE id LIKE 'ser_roll_b%';")
+                conn.commit()
+
+    def test_offline_series_condense_mode_and_single_book_overflow(self):
+        """Verifies 'condense' merges chapters to pack max books and 'chapters' condenses only when a single book exceeds 100 tracks."""
+        from core.bridge.offline import get_offline_manager
+
+        series_items = []
+        abs_items_by_id = {}
+        for idx in range(1, 5):
+            bid = f"ser_cond_b{idx}"
+            title = f"Condense Saga {idx}"
+            chapters = [
+                {"start": i * 600.0, "end": (i + 1) * 600.0, "title": f"Ch {i + 1}"}
+                for i in range(30)
+            ]
+            series_items.append({
+                "id": bid,
+                "type": "abs",
+                "title": title,
+                "author": "Author",
+                "raw_metadata": {
+                    "series": "Condense Saga",
+                    "series_order": str(idx),
+                    "series_list": [{"name": "Condense Saga", "order": str(idx)}],
+                    "duration": 30 * 600.0,
+                },
+            })
+            abs_items_by_id[bid] = {
+                "id": bid,
+                "media": {
+                    "duration": 30 * 600.0,
+                    "metadata": {"title": title, "seriesName": f"Condense Saga #{idx}"},
+                    "chapters": chapters,
+                },
+            }
+
+        huge_chapters = [
+            {"start": i * 600.0, "end": (i + 1) * 600.0, "title": f"Huge Ch {i + 1}"}
+            for i in range(120)
+        ]
+        abs_items_by_id["ser_cond_huge"] = {
+            "id": "ser_cond_huge",
+            "media": {
+                "duration": 120 * 600.0,
+                "metadata": {"title": "Huge Book"},
+                "chapters": huge_chapters,
+            },
+        }
+        database.upsert_media_items(series_items)
+        try:
+            mgr = get_bridge_manager()
+            with patch.object(clients.abs_client, "get_item", side_effect=lambda item_id, token=None: abs_items_by_id.get(item_id)), \
+                 patch.object(clients.abs_client, "get_media_progress", return_value={}):
+                slot = mgr.assign_abs_book_to_slot(
+                    slot_id="slot_series_cond",
+                    abs_item_id="ser_cond_b1",
+                    title="Condense Saga 1",
+                    series_name="Condense Saga",
+                    group_kind="series",
+                    mode="offline",
+                )
+                with database.get_db_connection() as conn:
+                    conn.execute(
+                        "UPDATE bridge_slots SET offline_mode = 'series', series_packing = 'condense' WHERE slot_id = ?;",
+                        ("slot_series_cond",),
+                    )
+                    conn.commit()
+                slot = mgr.get_slot("slot_series_cond")
+
+                planned_cond, meta_cond = get_offline_manager()._plan_offline_tracks(
+                    slot, submode="series", hours=5.0, speed=1.0, abs_token=None, base_url="http://localhost:5055"
+                )
+                self.assertEqual(meta_cond["series_packing"], "condense")
+                self.assertEqual(meta_cond["books"], ["ser_cond_b1", "ser_cond_b2", "ser_cond_b3", "ser_cond_b4"])
+                self.assertLessEqual(len(planned_cond), 100)
+                self.assertTrue(any(" – " in t["title"] for t in planned_cond))
+
+                # Edge case: single huge book (> 100 chapters) in 'chapters' mode falls back cleanly for that one book
+                slot_huge = mgr.assign_abs_book_to_slot(
+                    slot_id="slot_huge_ch",
+                    abs_item_id="ser_cond_huge",
+                    title="Huge Book",
+                    series_name="Unlisted Saga",
+                    group_kind="series",
+                    mode="offline",
+                )
+                with database.get_db_connection() as conn:
+                    conn.execute(
+                        "UPDATE bridge_slots SET offline_mode = 'series', series_packing = 'chapters' WHERE slot_id = ?;",
+                        ("slot_huge_ch",),
+                    )
+                    conn.commit()
+                slot_huge = mgr.get_slot("slot_huge_ch")
+                planned_huge, meta_huge = get_offline_manager()._plan_offline_tracks(
+                    slot_huge, submode="series", hours=5.0, speed=1.0, abs_token=None, base_url="http://localhost:5055"
+                )
+                self.assertEqual(meta_huge["series_packing"], "chapters")
+                self.assertEqual(meta_huge["books"], ["ser_cond_huge"])
+                self.assertLessEqual(len(planned_huge), 100)
+        finally:
+            with database.get_db_connection() as conn:
+                conn.execute("DELETE FROM media_items WHERE id LIKE 'ser_cond_b%';")
+                conn.commit()
+
+    def test_catalog_settings_offline_series_packing_and_slot_override(self):
+        """Verifies GET/PUT /api/admin/settings/catalog and per-slot series_packing override precedence."""
+        from core.bridge.offline import resolve_series_packing
+
+        old_packing = database.get_system_settings().get("offline_series_packing")
+        try:
+            res_get = self.app.get("/api/admin/settings/catalog")
+            self.assertEqual(res_get.status_code, 200)
+            self.assertEqual(res_get.get_json().get("offline_series_packing"), "chapters")
+
+            res_put = self.app.put("/api/admin/settings/catalog", json={"offline_series_packing": "condense"})
+            self.assertEqual(res_put.status_code, 200)
+            self.assertEqual(res_put.get_json().get("offline_series_packing"), "condense")
+            self.assertEqual(resolve_series_packing(None), "condense")
+
+            mgr = get_bridge_manager()
+            mgr.assign_abs_book_to_slot(slot_id="slot_pack_ov", abs_item_id="item_pack", title="Pack Book", mode="offline")
+            res_slot = self.app.put("/api/cards/slot_pack_ov", json={"series_packing": "chapters"})
+            self.assertEqual(res_slot.status_code, 200)
+            slot = mgr.get_slot("slot_pack_ov")
+            self.assertEqual(slot.get("series_packing"), "chapters")
+            self.assertEqual(resolve_series_packing(slot), "chapters")
+
+            # Clearing per-card override falls back to global setting ('condense')
+            res_clear = self.app.put("/api/cards/slot_pack_ov", json={"series_packing": ""})
+            self.assertEqual(res_clear.status_code, 200)
+            slot_cleared = mgr.get_slot("slot_pack_ov")
+            self.assertEqual(resolve_series_packing(slot_cleared), "condense")
+        finally:
+            if old_packing is None:
+                with database.get_db_connection() as conn:
+                    conn.execute("DELETE FROM system_settings WHERE key = 'offline_series_packing';")
+                    conn.commit()
+            else:
+                database.set_system_setting("offline_series_packing", old_packing)
+
 
 if __name__ == "__main__":
     unittest.main()

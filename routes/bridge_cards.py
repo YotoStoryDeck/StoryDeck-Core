@@ -118,6 +118,9 @@ def update_card(slot_id: str):
         updates["title"] = str(data["title"]).strip()
     if "yoto_card_id" in data and data["yoto_card_id"] is not None:
         updates["yoto_card_id"] = str(data["yoto_card_id"]).strip()
+    if "series_packing" in data and data["series_packing"] is not None:
+        sp = str(data["series_packing"]).strip().lower()
+        updates["series_packing"] = sp if sp in ("chapters", "condense") else ""
     if "kind" in data and data["kind"] in ("profile_primary", "permanent_myo"):
         updates["kind"] = data["kind"]
         if data["kind"] == "permanent_myo":
@@ -203,14 +206,23 @@ def set_card_delivery_mode(slot_id: str):
     target_mode = "streaming" if raw_mode == "streaming" else "offline"
     submode = normalize_offline_submode(raw_mode, slot) if target_mode == "offline" else (slot.get("offline_mode") or "book")
     hours = float(data.get("hours") or slot.get("offline_hours") or 5.0)
+    new_group_kind = "series" if submode == "series" else (slot.get("group_kind") or "book")
 
     conn = database.get_db_connection()
     try:
         with conn:
-            conn.execute(
-                "UPDATE bridge_slots SET mode = ?, offline_mode = ?, offline_hours = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
-                (target_mode, submode, hours, slot_id),
-            )
+            if "series_packing" in data and data["series_packing"] is not None:
+                sp = str(data["series_packing"]).strip().lower()
+                sp_val = sp if sp in ("chapters", "condense") else ""
+                conn.execute(
+                    "UPDATE bridge_slots SET mode = ?, offline_mode = ?, offline_hours = ?, group_kind = ?, series_packing = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
+                    (target_mode, submode, hours, new_group_kind, sp_val, slot_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE bridge_slots SET mode = ?, offline_mode = ?, offline_hours = ?, group_kind = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
+                    (target_mode, submode, hours, new_group_kind, slot_id),
+                )
     finally:
         conn.close()
 
@@ -376,6 +388,13 @@ def assign_card_content():
     slot_mode = slot.get("mode", "streaming")
     slot_key = slot.get("slot_id")
     submode = normalize_offline_submode(mode_override, slot)
+    if "series_packing" in data and data["series_packing"] is not None and slot_key:
+        sp = str(data["series_packing"]).strip().lower()
+        sp_val = sp if sp in ("chapters", "condense") else ""
+        with database.get_db_connection() as conn:
+            conn.execute("UPDATE bridge_slots SET series_packing = ? WHERE slot_id = ?;", (sp_val, slot_key))
+            conn.commit()
+        slot["series_packing"] = sp_val
     playlist_title = (slot.get("series_name") if slot.get("group_kind") == "series" and slot.get("series_name") else slot.get("title")) or "Audiobook"
 
     if slot_mode == "offline":

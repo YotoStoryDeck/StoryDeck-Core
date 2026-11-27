@@ -117,7 +117,10 @@ def current_series_book_index(books: List[SeriesBook], progress_by_item: Dict[st
         return 0
     _, latest_idx = max(touched)
     if progress_by_item[books[latest_idx].item_id].get("isFinished"):
-        return (latest_idx + 1) if (latest_idx + 1) < len(books) else 0
+        nxt = latest_idx + 1
+        while nxt < len(books) and (progress_by_item.get(books[nxt].item_id) or {}).get("isFinished"):
+            nxt += 1
+        return nxt if nxt < len(books) else 0
     return latest_idx
 
 
@@ -281,7 +284,7 @@ def resolve_slot_series_chain(
         return [], 0, []
 
     ids = [b.item_id for b in books]
-    if str(slot.get("group_kind") or "") == "series":
+    if str(slot.get("group_kind") or "") == "series" or str(slot.get("offline_mode") or "") == "series":
         prog_map: Dict[str, Dict[str, Any]] = {}
         if slot.get("own_place"):
             prog_map = get_local_progress_map(slot.get("slot_id") or "")

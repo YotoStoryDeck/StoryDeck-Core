@@ -350,7 +350,7 @@
           <option value="streaming">⚡ Streaming (Instant Playback)</option>
           <option value="offline_next">⏱️ Offline — Next 5 Hours (Rolling Window from Resume Point)</option>
           <option value="offline_book">💾 Offline — Whole Book (&le; 99 Tracks)</option>
-          <option value="offline_series">📚 Offline — Whole Series (&le; 99 Tracks)</option>
+          <option value="offline_series">📚 Offline — Whole Series (&le; 100 Tracks)</option>
         </select>
         <small class="text-secondary" style="font-size: 10px; display: block; margin-top: 4px;">
           Offline modes upload tracks to Yoto Cloud (playing finished tracks offline while remaining tracks stream live).
@@ -472,6 +472,14 @@
         <div class="form-group" id="editCardProfileGroup">
           <label for="editCardOwnerProfile">Assigned Profile</label>
           <select id="editCardOwnerProfile" class="form-control"></select>
+        </div>
+        <div class="form-group">
+          <label for="editCardSeriesPacking">Offline Series Layout</label>
+          <select id="editCardSeriesPacking" class="form-control">
+            <option value="">Use Global Default</option>
+            <option value="chapters">Maintain Chapters (Rolling Whole Books, &le; 100 Tracks)</option>
+            <option value="condense">Condense Chapters into Parts (Max Books per Card)</option>
+          </select>
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
           <button type="button" class="btn btn-secondary" onclick="closeEditCardSlotModal()">Cancel</button>

@@ -16,6 +16,7 @@ from .chapters import (
     DEFAULT_OFFLINE_TRACK_SECONDS,
     DEFAULT_PART_SECONDS,
     MAX_OFFLINE_NEXT_TRACKS,
+    MAX_OFFLINE_SERIES_TRACKS,
     WHOLE_TRACKS,
     YOTO_MAX_TRACK,
     chapter_spans,
@@ -53,7 +54,7 @@ def normalize_offline_submode(raw_mode: Optional[str], slot: Optional[Dict[str, 
     """
     Maps UI/API delivery mode strings to one of ('next', 'book', 'series'):
     - 'offline_next' | 'next' | '5h' | 'hours' -> 'next' (5-hour rolling window from ABS resume point)
-    - 'offline_series' | 'series' -> 'series' (whole series packed into <= 99 tracks)
+    - 'offline_series' | 'series' -> 'series' (rolling whole books <= 100 tracks, or condensed series)
     - 'offline_book' | 'book' | 'offline' -> 'book' (or slot's stored offline_mode if in OFFLINE_MODES)
     """
     m = str(raw_mode or "").strip().lower()
@@ -70,6 +71,32 @@ def normalize_offline_submode(raw_mode: Optional[str], slot: Optional[Dict[str, 
         if str(slot.get("group_kind") or "") == "series":
             return "next"
     return "book"
+
+
+def resolve_series_packing(slot: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Resolves effective offline series packing mode ('chapters' [default] or 'condense'):
+    - 'chapters': maintains each book's individual chapters and rolls whole books (<= 100 tracks).
+    - 'condense': condenses chapters into merged parts to fit maximum books per card.
+    Checks per-slot `series_packing` override first, then global `offline_series_packing` setting.
+    """
+    slot_val = str((slot or {}).get("series_packing") or "").strip().lower()
+    if slot_val in ("chapters", "condense"):
+        return slot_val
+    try:
+        sys_val = str((database.get_system_settings() or {}).get("offline_series_packing") or "chapters").strip().lower()
+    except Exception:
+        sys_val = "chapters"
+    return "condense" if sys_val == "condense" else "chapters"
+
+
+def _extract_slot_base_url(slot: Dict[str, Any]) -> str:
+    """Extracts external HTTP(S) base URL prefix from an existing slot track's stream_url."""
+    for t in (slot.get("tracks") or []):
+        s_url = str(t.get("stream_url") or "")
+        if "/s/audio/" in s_url and s_url.startswith("http"):
+            return s_url.split("/s/audio/", 1)[0]
+    return ""
 
 
 class OfflineTranscodeManager:
@@ -202,13 +229,7 @@ class OfflineTranscodeManager:
                 if not is_building and not has_unencoded:
                     continue
                 self._verify_last_uploaded_track(slot, tracks)
-                # Extract base_url from existing track stream_url if available
-                base_url = ""
-                for t in tracks:
-                    s_url = str(t.get("stream_url") or "")
-                    if "/s/audio/" in s_url and s_url.startswith("http"):
-                        base_url = s_url.split("/s/audio/", 1)[0]
-                        break
+                base_url = _extract_slot_base_url(slot)
                 submode = str(slot.get("offline_mode") or "book")
                 hours = float(slot.get("offline_hours") or 5.0)
                 done_cnt = sum(1 for t in tracks if str(t.get("yoto_sha256") or "").strip())
@@ -402,9 +423,15 @@ class OfflineTranscodeManager:
             planned_segments = planned_segments[:MAX_OFFLINE_NEXT_TRACKS]
 
         else:
-            # 'book' or 'series': whole book(s) packed into <= 99 tracks
+            # 'book' or 'series': whole book(s) packed into <= 99 ('book') or <= 100 ('series') tracks
             max_len = YOTO_MAX_TRACK * speed
-            earlier = all_series_books[:active_idx] if (submode == "series" and all_series_books) else []
+            packing = resolve_series_packing(slot) if submode == "series" else "condense"
+            track_limit = MAX_OFFLINE_SERIES_TRACKS if submode == "series" else WHOLE_TRACKS
+            earlier = (
+                all_series_books[:active_idx]
+                if (submode == "series" and packing == "condense" and all_series_books)
+                else []
+            )
             later = following_books if submode == "series" else []
 
             candidate_group: List[Tuple[str, str, float, Optional[List[Dict[str, Any]]]]] = (
@@ -415,42 +442,81 @@ class OfflineTranscodeManager:
             ch_cache: Dict[str, List[Dict[str, Any]]] = {abs_item_id: chapters}
             dur_cache: Dict[str, float] = {abs_item_id: duration}
 
-            def _take_fitting(group):
-                fit = []
-                fit_chs = []
+            def _load_book_meta(b_id: str, fallback_dur: float) -> Tuple[List[Dict[str, Any]], float]:
+                if b_id not in ch_cache or dur_cache.get(b_id, 0.0) <= 0:
+                    b_item = clients.abs_client.get_item(b_id, token=abs_token) or {}
+                    b_media = b_item.get("media") or {}
+                    ch_cache[b_id] = b_media.get("chapters") or []
+                    dur_cache[b_id] = float(b_media.get("duration") or fallback_dur or 0.0)
+                return ch_cache[b_id], dur_cache[b_id]
+
+            fit_books: List[Tuple[str, str, float]] = []
+            plans: List[List[Tuple[float, float, str]]] = []
+
+            if submode == "series" and packing == "chapters":
+                # Branch A (Default): preserve individual chapters across whole books up to 100 tracks;
+                # finished earlier books are dropped so subsequent books roll onto the card.
                 used_tracks = 0
-                for b_id, b_title, b_dur, b_ch in group:
-                    if b_id not in ch_cache or dur_cache.get(b_id, 0.0) <= 0:
-                        b_item = clients.abs_client.get_item(b_id, token=abs_token) or {}
-                        b_media = b_item.get("media") or {}
-                        ch_cache[b_id] = b_media.get("chapters") or []
-                        dur_cache[b_id] = float(b_media.get("duration") or b_dur or 0.0)
-                    c_list = ch_cache[b_id]
-                    d_val = dur_cache[b_id]
+                for b_id, b_title, b_dur, _ in candidate_group:
+                    c_list, d_val = _load_book_meta(b_id, b_dur)
                     if d_val <= 0:
                         continue
-                    need = min_tracks(c_list, d_val, max_len, DEFAULT_PART_SECONDS, mgr.quiet_spots.snapper(b_id))
-                    if used_tracks + need > WHOLE_TRACKS and fit:
+                    snap = mgr.quiet_spots.snapper(b_id)
+                    units = chapter_units(c_list, d_val, max_len, DEFAULT_PART_SECONDS, snap)
+                    if not units:
+                        continue
+                    if used_tracks + len(units) <= track_limit:
+                        fit_books.append((b_id, b_title, d_val))
+                        plans.append([(s, e, t) for s, e, t, _n in units])
+                        used_tracks += len(units)
+                    elif not fit_books:
+                        # Single active book alone exceeds 100 chapters: condense only this book.
+                        single_plan = plan_whole(
+                            [(c_list, d_val)],
+                            max_len=max_len,
+                            limit=track_limit,
+                            part_seconds=DEFAULT_PART_SECONDS,
+                            snaps=[snap],
+                        )
+                        fit_books.append((b_id, b_title, d_val))
+                        plans.append(single_plan[0] if single_plan else [])
                         break
-                    fit.append((b_id, b_title, d_val))
-                    fit_chs.append(c_list)
-                    used_tracks += need
-                return fit, fit_chs
+                    else:
+                        break
+                books_left_off = max(0, len(candidate_group) - len(fit_books))
+            else:
+                def _take_fitting(group):
+                    fit = []
+                    fit_chs = []
+                    used_tracks = 0
+                    for b_id, b_title, b_dur, _ in group:
+                        c_list, d_val = _load_book_meta(b_id, b_dur)
+                        if d_val <= 0:
+                            continue
+                        need = min_tracks(c_list, d_val, max_len, DEFAULT_PART_SECONDS, mgr.quiet_spots.snapper(b_id))
+                        if used_tracks + need > track_limit and fit:
+                            break
+                        fit.append((b_id, b_title, d_val))
+                        fit_chs.append(c_list)
+                        used_tracks += need
+                    return fit, fit_chs
 
-            fit_books, fit_chapters = _take_fitting(candidate_group)
-            if earlier and abs_item_id not in [b[0] for b in fit_books]:
-                fit_books, fit_chapters = _take_fitting(candidate_group[len(earlier):])
-            books_left_off = max(0, len(candidate_group) - len(fit_books))
+                fit_books, fit_chapters = _take_fitting(candidate_group)
+                if earlier and abs_item_id not in [b[0] for b in fit_books]:
+                    fit_books, fit_chapters = _take_fitting(candidate_group[len(earlier):])
+                books_left_off = max(0, len(candidate_group) - len(fit_books))
 
-            if fit_books:
-                snaps = [mgr.quiet_spots.snapper(b[0]) for b in fit_books]
-                plans = plan_whole(
-                    [(ch, b[2]) for ch, b in zip(fit_chapters, fit_books)],
-                    max_len=max_len,
-                    limit=WHOLE_TRACKS,
-                    part_seconds=DEFAULT_PART_SECONDS,
-                    snaps=snaps,
-                )
+                if fit_books:
+                    snaps = [mgr.quiet_spots.snapper(b[0]) for b in fit_books]
+                    plans = plan_whole(
+                        [(ch, b[2]) for ch, b in zip(fit_chapters, fit_books)],
+                        max_len=max_len,
+                        limit=track_limit,
+                        part_seconds=DEFAULT_PART_SECONDS,
+                        snaps=snaps,
+                    )
+
+            if fit_books and plans:
                 multi = len(fit_books) > 1
                 for (b_id, b_title, b_dur), plan in zip(fit_books, plans):
                     for s, e, ch_title in plan:
@@ -466,7 +532,7 @@ class OfflineTranscodeManager:
                             "duration": max(0.1, e - s),
                             "title": label,
                         })
-                planned_segments = planned_segments[:WHOLE_TRACKS]
+                planned_segments = planned_segments[:track_limit]
 
         if not planned_segments:
             return slot.get("tracks") or [], {}
@@ -497,6 +563,8 @@ class OfflineTranscodeManager:
             "last_write_wall": time.time(),
             "tracks": [],
         }
+        if submode == "series":
+            offline_meta["series_packing"] = resolve_series_packing(slot)
         if first_seg["abs_item_id"] != abs_item_id or resume_start > first_seg["start_time"] + 1.0:
             offline_meta["resume"] = {"item_id": abs_item_id, "pos": resume_start}
 
@@ -992,6 +1060,8 @@ class OfflineTranscodeManager:
                 )
                 patch_effective_item_progress(slot, done_id, done_dur, done_dur, is_finished=True, abs_token=abs_token)
             meta["cur_item"] = t_item_id
+            if slot.get("offline_mode") == "series":
+                meta["series_refresh_pending"] = True
 
         # Anti-backwards guard: never overwrite if phone moved further since our last write
         prog = get_effective_item_progress(slot, t_item_id, abs_token=abs_token)
@@ -1006,8 +1076,73 @@ class OfflineTranscodeManager:
             patch_effective_item_progress(slot, t_item_id, pos, t_book_dur, is_finished=is_fin, abs_token=abs_token)
             meta["last_written"] = pos
             meta["last_write_wall"] = time.time()
+            if is_fin and slot.get("offline_mode") == "series":
+                meta["series_refresh_pending"] = True
 
         self._save_slot_offline_meta(slot["slot_id"], meta)
+        if status in ("paused", "stopped") and meta.get("series_refresh_pending"):
+            self._maybe_refresh_series_slot(slot, meta)
+
+    def _maybe_refresh_series_slot(self, slot: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Checks if an offline series card's leading book has finished so finished books can be dropped
+        and the next book(s) in the series rolled onto the card automatically.
+        """
+        slot_id = str(slot.get("slot_id") or "")
+        if not slot_id or slot.get("mode") != "offline" or slot.get("offline_mode") != "series":
+            return False
+        if slot.get("kind") in ("profile_cache", "ephemeral_offline"):
+            return False
+        if self.is_busy(slot_id) or self._is_slot_playing(slot):
+            return False
+
+        if meta is None:
+            raw_meta = slot.get("offline_meta")
+            meta = {}
+            if isinstance(raw_meta, str) and raw_meta:
+                try:
+                    meta = json.loads(raw_meta)
+                except Exception:
+                    meta = {}
+            elif isinstance(raw_meta, dict):
+                meta = dict(raw_meta)
+
+        abs_token = self._resolve_slot_abs_token(slot)
+        all_books, active_idx, _ = resolve_slot_series_chain(slot, abs_token=abs_token)
+        if not all_books:
+            return False
+
+        cur_books = [str(b) for b in (meta.get("books") or []) if b]
+        new_active_id = all_books[active_idx].item_id
+        if not cur_books or new_active_id == cur_books[0]:
+            if meta.get("series_refresh_pending"):
+                meta["series_refresh_pending"] = False
+                self._save_slot_offline_meta(slot_id, meta)
+            return False
+
+        meta["series_refresh_pending"] = False
+        self._save_slot_offline_meta(slot_id, meta)
+        logger.info(
+            "Rolling offline series card %s forward from finished book %s -> %s",
+            slot_id,
+            cur_books[0],
+            new_active_id,
+        )
+        self.queue_transcode(slot_id, base_url=_extract_slot_base_url(slot), offline_mode="series")
+        return True
+
+    def refresh_offline_series_slots(self) -> int:
+        """Scans all offline series slots and queues rolling updates when a leading book has finished."""
+        queued = 0
+        try:
+            mgr = get_bridge_manager()
+            for slot in (mgr.list_slots() or []):
+                if slot.get("mode") == "offline" and slot.get("offline_mode") == "series":
+                    if self._maybe_refresh_series_slot(slot):
+                        queued += 1
+        except Exception as e:
+            logger.debug("refresh_offline_series_slots notice: %s", e)
+        return queued
 
     def _save_slot_offline_meta(self, slot_id: str, meta: Dict[str, Any]):
         conn = database.get_db_connection()
@@ -1031,6 +1166,11 @@ def get_offline_manager() -> OfflineTranscodeManager:
     if _offline_manager is None:
         _offline_manager = OfflineTranscodeManager()
     return _offline_manager
+
+
+def refresh_offline_series_slots() -> int:
+    """Module-level entrypoint for rolling finished books off offline series cards."""
+    return get_offline_manager().refresh_offline_series_slots()
 
 
 def prune_evicted_profile_playlists() -> Dict[str, Any]:
