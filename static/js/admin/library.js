@@ -2,10 +2,16 @@
 // Curation Matrix (Tab 2)
 // ============================================================================
 
-// Helper to clean titles for article-insensitive sorting (matching Controller behavior)
+// Helper to clean titles for article-insensitive sorting (shared via StoryDeckSeries)
 function cleanTitleForSort(str) {
+  if (window.StoryDeckSeries) return window.StoryDeckSeries.cleanTitleForSort(str);
   if (!str) return "";
   return String(str).replace(/^(the|a|an)\s+/i, "").trim().toLowerCase();
+}
+
+function onCurationSortOrSeriesChange() {
+  renderMatrixTable();
+  filterMatrix();
 }
 
 
@@ -165,39 +171,28 @@ function renderMatrixTable() {
   // Populate dynamic series dropdown from unique series across items
   populateSeriesFilterDropdown();
 
-  // Sort items using Controller methodology: Highlights first, then article-insensitive (ignoring 'A', 'An', 'The')
-  const sortedItems = [...currentMatrix.items].sort((a, b) => {
-    const hiA = !!a.is_highlight;
-    const hiB = !!b.is_highlight;
-    if (hiA !== hiB) {
-      return hiA ? -1 : 1; // Highlights on top
-    }
-    const titleA = cleanTitleForSort(a.title);
-    const titleB = cleanTitleForSort(b.title);
-    return titleA.localeCompare(titleB);
-  });
+  const sortBy = document.getElementById("curationSortSelect")?.value || "name";
+  const selectedSeries = document.getElementById("curationSeriesFilter")?.value || "all";
+
+  // Sort using shared StoryDeckSeries utility (Name with highlights first vs Series Order)
+  const sortedItems = window.StoryDeckSeries
+    ? window.StoryDeckSeries.sortItems(currentMatrix.items, {
+        sortBy,
+        selectedSeries,
+        highlightsFirst: sortBy === "name"
+      })
+    : [...currentMatrix.items].sort((a, b) => {
+        const hiA = !!a.is_highlight;
+        const hiB = !!b.is_highlight;
+        if (hiA !== hiB) return hiA ? -1 : 1;
+        return cleanTitleForSort(a.title).localeCompare(cleanTitleForSort(b.title));
+      });
 
   sortedItems.forEach(item => {
     const tr = document.createElement("tr");
-    // Parse series list (support multi-series like "Star Wars #55, Star Wars Classic Stories #7")
-    const seriesList = [];
-    if (Array.isArray(item.series_list) && item.series_list.length > 0) {
-      item.series_list.forEach(s => {
-        const clean = normalizeSeriesEntry(s.name, s.order);
-        if (clean) seriesList.push(clean);
-      });
-    } else if (item.series) {
-      const parts = String(item.series).split(",");
-      if (parts.length > 1) {
-        parts.forEach(p => {
-          const clean = normalizeSeriesEntry(p);
-          if (clean) seriesList.push(clean);
-        });
-      } else {
-        const clean = normalizeSeriesEntry(item.series, item.series_order);
-        if (clean) seriesList.push(clean);
-      }
-    }
+    const seriesList = window.StoryDeckSeries
+      ? window.StoryDeckSeries.extractItemSeriesList(item)
+      : [];
 
     const allSeriesNames = seriesList.map(s => s.name.toLowerCase());
     const seriesText = seriesList.map(s => ` ${s.name} ${s.order}`).join(" ");
@@ -355,97 +350,26 @@ function renderMatrixTable() {
 }
 
 function normalizeSeriesEntry(rawName, rawOrder = "") {
-  let name = (rawName || "").trim();
-  let order = String(rawOrder || "").trim();
-  if (!name) return null;
-
-  const matchSeq = name.match(/\s*#\s*([0-9]+(?:\.[0-9]+)?(?:\s*[-–—,&]\s*[0-9]+(?:\.[0-9]+)?)*)$/);
-  if (matchSeq) {
-    if (!order) order = matchSeq[1].replace(/\s+/g, "");
-    name = name.slice(0, matchSeq.index).trim();
-  } else {
-    const matchBook = name.match(/[,:\s]+(?:Books?|Volumes?|Vol\.?|Parts?)\s*([0-9]+(?:\.[0-9]+)?(?:\s*[-–—,&]\s*[0-9]+(?:\.[0-9]+)?)*)$/i);
-    if (matchBook) {
-      if (!order) order = matchBook[1].replace(/\s+/g, "");
-      name = name.slice(0, matchBook.index).trim();
-    }
+  if (window.StoryDeckSeries) {
+    return window.StoryDeckSeries.normalizeSeriesEntry(rawName, rawOrder);
   }
-
+  const name = String(rawName || "").trim();
+  const order = String(rawOrder || "").trim();
   return name ? { name, order } : null;
 }
 
 function populateSeriesFilterDropdown() {
   const select = document.getElementById("curationSeriesFilter");
-  if (!select) return;
-
-  const currentVal = select.value;
-  select.innerHTML = '<option value="all">All Series / Groups</option>';
-
-  const seriesSet = new Set();
-  (currentMatrix.items || []).forEach(it => {
-    if (Array.isArray(it.series_list) && it.series_list.length > 0) {
-      it.series_list.forEach(s => {
-        const clean = normalizeSeriesEntry(s.name, s.order);
-        if (clean && clean.name) seriesSet.add(clean.name);
-      });
-    } else if (it.series) {
-      const parts = String(it.series).split(",");
-      if (parts.length > 1) {
-        parts.forEach(p => {
-          const clean = normalizeSeriesEntry(p);
-          if (clean && clean.name) seriesSet.add(clean.name);
-        });
-      } else {
-        const clean = normalizeSeriesEntry(it.series, it.series_order);
-        if (clean && clean.name) seriesSet.add(clean.name);
-      }
-    }
-  });
-
-  // Populate autocomplete datalist with ALL unique series across library (even single-card series)
-  const allSeriesSorted = Array.from(seriesSet).sort((a, b) => {
-    return cleanTitleForSort(a).localeCompare(cleanTitleForSort(b));
-  });
-  populateSeriesDatalist(allSeriesSorted);
-
-  // Check if exclude_single_card_series is enabled (default true, matching Controller)
   const excludeSingle = (currentMatrix.exclude_single_card_series !== false);
 
-  // Filter out single-card series if exclude_single_card_series is active
-  const filteredSeries = Array.from(seriesSet).filter(seriesName => {
-    if (!excludeSingle) return true;
-    const count = (currentMatrix.items || []).filter(it => {
-      if (Array.isArray(it.series_list) && it.series_list.length > 0) {
-        return it.series_list.some(s => {
-          const clean = normalizeSeriesEntry(s.name, s.order);
-          return clean && clean.name.toLowerCase() === seriesName.toLowerCase();
-        });
-      } else if (it.series) {
-        const parts = String(it.series).split(",");
-        return parts.some(p => {
-          const clean = normalizeSeriesEntry(p, it.series_order);
-          return clean && clean.name.toLowerCase() === seriesName.toLowerCase();
-        });
-      }
-      return false;
-    }).length;
-    return count > 1;
-  });
-
-  // Sort series alphabetically ignoring 'The', 'A', 'An' (matching Controller)
-  const sortedSeries = filteredSeries.sort((a, b) => {
-    return cleanTitleForSort(a).localeCompare(cleanTitleForSort(b));
-  });
-
-  sortedSeries.forEach(s => {
-    const opt = document.createElement("option");
-    opt.value = s.toLowerCase();
-    opt.textContent = `📚 ${s}`;
-    select.appendChild(opt);
-  });
-
-  if (currentVal && Array.from(select.options).some(o => o.value === currentVal)) {
-    select.value = currentVal;
+  if (window.StoryDeckSeries) {
+    const res = window.StoryDeckSeries.populateSeriesSelect(select, currentMatrix.items || [], {
+      excludeSingleCardSeries: excludeSingle,
+      allValue: "all",
+      allLabel: "All Series / Groups",
+      preserveSelection: true
+    });
+    populateSeriesDatalist(res.allSeriesSorted);
   }
 }
 

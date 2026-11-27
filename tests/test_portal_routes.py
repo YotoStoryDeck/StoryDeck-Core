@@ -246,6 +246,41 @@ class TestPortalRoutes(unittest.TestCase):
         finally:
             database.update_api_credentials(orig_creds)
 
+    def test_portal_and_admin_share_series_utils_and_sort_controls(self):
+        """Verifies portal library exposes X-Exclude-Single-Card-Series header and both portals load series_utils.js + sort controls."""
+        old_val = database.get_system_settings().get("exclude_single_card_series")
+        try:
+            database.set_system_setting("exclude_single_card_series", True)
+            res_on = self.app.get("/api/library/profile/portal_child", environ_base={"REMOTE_ADDR": "192.168.1.100"})
+            self.assertEqual(res_on.status_code, 200)
+            self.assertEqual(res_on.headers.get("X-Exclude-Single-Card-Series"), "1")
+
+            database.set_system_setting("exclude_single_card_series", False)
+            res_off = self.app.get("/api/library/profile/portal_child", environ_base={"REMOTE_ADDR": "192.168.1.100"})
+            self.assertEqual(res_off.status_code, 200)
+            self.assertEqual(res_off.headers.get("X-Exclude-Single-Card-Series"), "0")
+
+            res_portal = self.app.get("/", environ_base={"REMOTE_ADDR": "192.168.1.100"})
+            self.assertEqual(res_portal.status_code, 200)
+            self.assertIn(b"series_utils.js", res_portal.data)
+            self.assertIn(b"librarySortSelect", res_portal.data)
+
+            with self.app.session_transaction() as sess:
+                sess["user_id"] = "test_admin_ui"
+                sess["username"] = "test_admin_ui"
+                sess["role"] = "admin"
+            res_admin = self.app.get("/admin")
+            self.assertEqual(res_admin.status_code, 200)
+            self.assertIn(b"series_utils.js", res_admin.data)
+            self.assertIn(b"curationSortSelect", res_admin.data)
+        finally:
+            if old_val is None:
+                with database.get_db_connection() as conn:
+                    conn.execute("DELETE FROM system_settings WHERE key = 'exclude_single_card_series';")
+                    conn.commit()
+            else:
+                database.set_system_setting("exclude_single_card_series", old_val)
+
 
 if __name__ == "__main__":
     unittest.main()

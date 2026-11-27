@@ -227,7 +227,12 @@
             </select>
             <select id="librarySeriesSelect" class="form-control" style="flex: 1; min-width: 120px;"
               onchange="filterLibraryGrid()">
-              <option value="">All Series</option>
+              <option value="">All Series / Groups</option>
+            </select>
+            <select id="librarySortSelect" class="form-control" style="flex: 1; min-width: 130px;"
+              onchange="filterLibraryGrid()" title="Sort Library">
+              <option value="name">🔤 Sort: Name (A–Z)</option>
+              <option value="series_order">📚 Sort: Series Order</option>
             </select>
           </div>
 
@@ -443,8 +448,9 @@
   <script src="/static/js/core_health.js?v=20261120_07"></script>
   <script src="/static/js/portal/core.js?v=20261121_16"></script>
   <script src="/static/js/portal/player.js?v=20261121_16"></script>
-  <script src="/static/js/portal/library.js?v=20261121_16"></script>
-  <script src="/static/js/portal/cards.js?v=20261121_16"></script>
+  <script src="/static/js/series_utils.js?v=20261126_01"></script>
+  <script src="/static/js/portal/library.js?v=20261126_01"></script>
+  <script src="/static/js/portal/cards.js?v=20261126_01"></script>
   <script src="/static/js/portal/playlists.js?v=20261121_16"></script>
   <!-- Edit Card Slot Modal (Rename / Move Personal <-> Fleet) -->
   <div class="modal-overlay" id="editCardSlotModal" style="display: none;">

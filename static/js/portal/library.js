@@ -2,20 +2,37 @@
 // TAB 2: Library Operations
 // -----------------------------------------------------------------------------
 
+let portalExcludeSingleSeries = true;
+
 async function loadLibrary() {
   if (!activeProfileId) return;
   try {
     const res = await fetch(`/api/library/profile/${activeProfileId}`);
     if (!res.ok) return;
+    const hdrExclude = res.headers.get("X-Exclude-Single-Card-Series");
+    if (hdrExclude === "0" || hdrExclude === "1") {
+      portalExcludeSingleSeries = hdrExclude === "1";
+    }
     libraryItems = await res.json();
     populateSeriesFilter();
-    renderLibraryGrid(libraryItems);
+    filterLibraryGrid();
   } catch (err) {
     console.error("Library load error:", err);
   }
 }
 
 function populateSeriesFilter() {
+  const select = document.getElementById("librarySeriesSelect");
+  if (!select) return;
+  if (window.StoryDeckSeries) {
+    window.StoryDeckSeries.populateSeriesSelect(select, libraryItems, {
+      excludeSingleCardSeries: portalExcludeSingleSeries,
+      allValue: "",
+      allLabel: "All Series / Groups",
+      preserveSelection: true
+    });
+    return;
+  }
   const seriesSet = new Set();
   libraryItems.forEach(item => {
     if (item.series) seriesSet.add(item.series);
@@ -23,13 +40,11 @@ function populateSeriesFilter() {
       item.series_list.forEach(s => { if (s.name) seriesSet.add(s.name); });
     }
   });
-
-  const select = document.getElementById("librarySeriesSelect");
-  select.innerHTML = "<option value=''>All Series</option>";
+  select.innerHTML = "<option value=''>All Series / Groups</option>";
   Array.from(seriesSet).sort().forEach(s => {
     const opt = document.createElement("option");
-    opt.value = s;
-    opt.innerText = s;
+    opt.value = s.toLowerCase();
+    opt.innerText = `📚 ${s}`;
     select.appendChild(opt);
   });
 }
@@ -37,7 +52,8 @@ function populateSeriesFilter() {
 function filterLibraryGrid() {
   const q = document.getElementById("librarySearchInput").value.toLowerCase().trim();
   const sourceFilter = document.getElementById("librarySourceSelect")?.value || "";
-  const seriesFilter = document.getElementById("librarySeriesSelect").value;
+  const seriesFilter = document.getElementById("librarySeriesSelect")?.value || "";
+  const sortBy = document.getElementById("librarySortSelect")?.value || "name";
 
   const filtered = libraryItems.filter(item => {
     const title = (item.title || "").toLowerCase();
@@ -51,16 +67,21 @@ function filterLibraryGrid() {
       matchesSource = item.type !== "abs";
     }
 
-    let matchesSeries = true;
-    if (seriesFilter) {
-      const inPrimary = (item.series || "") === seriesFilter;
-      const inList = item.series_list && item.series_list.some(s => s.name === seriesFilter);
-      matchesSeries = inPrimary || inList;
-    }
+    const matchesSeries = window.StoryDeckSeries
+      ? window.StoryDeckSeries.itemMatchesSeries(item, seriesFilter)
+      : (!seriesFilter || (item.series || "").toLowerCase() === seriesFilter.toLowerCase());
     return matchesQ && matchesSource && matchesSeries;
   });
 
-  renderLibraryGrid(filtered);
+  const sorted = window.StoryDeckSeries
+    ? window.StoryDeckSeries.sortItems(filtered, {
+        sortBy,
+        selectedSeries: seriesFilter,
+        highlightsFirst: false
+      })
+    : filtered;
+
+  renderLibraryGrid(sorted);
 }
 
 function renderLibraryGrid(items) {

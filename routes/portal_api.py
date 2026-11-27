@@ -244,7 +244,10 @@ def get_profile_library_catalog(profile_id: str):
             return jsonify({"ok": False, "error": "Guest accounts are scoped to assigned profiles."}), 403
     """Returns curated ABS audiobooks and series permitted for the specified profile."""
     try:
-        return jsonify(_query_profile_library_catalog(profile_id))
+        resp = jsonify(_query_profile_library_catalog(profile_id))
+        exclude_single = bool(database.get_system_settings().get("exclude_single_card_series", True))
+        resp.headers["X-Exclude-Single-Card-Series"] = "1" if exclude_single else "0"
+        return resp
     except Exception as e:
         logger.error("Failed to query catalog for profile %s: %s", profile_id, e)
         return jsonify([])
