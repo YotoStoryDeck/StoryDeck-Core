@@ -26,7 +26,7 @@ from .chapters import (
     plan_segments,
     plan_whole,
 )
-from .icons import get_or_upload_yoto_icon, upload_abs_cover_to_yoto
+from .icons import get_or_upload_yoto_icon, resolve_source_chapter_idx, upload_abs_cover_to_yoto
 from .manager import get_bridge_manager
 from .mqtt_client import get_mqtt_bridge
 from .series import (
@@ -983,6 +983,23 @@ class OfflineTranscodeManager:
                 live_state["ok"] = False
                 logger.debug("save_mixed_playlist batch notice for %s: %s", slot_id, e)
 
+        book_chapters_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+        def _get_book_chapters(book_id: str) -> List[Dict[str, Any]]:
+            if book_id not in book_chapters_cache:
+                chapters_list: List[Dict[str, Any]] = []
+                if clients.abs_client and book_id:
+                    try:
+                        b_item = clients.abs_client.get_item(book_id, token=abs_token)
+                        if isinstance(b_item, dict):
+                            media_obj = b_item.get("media")
+                            if isinstance(media_obj, dict):
+                                chapters_list = media_obj.get("chapters") or []
+                    except Exception as e:
+                        logger.debug("Offline [%s]: chapters lookup failed for %s: %s", slot_id, book_id, e)
+                book_chapters_cache[book_id] = chapters_list
+            return book_chapters_cache[book_id]
+
         conn = database.get_db_connection()
         try:
             for idx, trk in enumerate(tracks):
@@ -994,7 +1011,13 @@ class OfflineTranscodeManager:
                 end_sec = float(trk["end_time"])
                 trk_title = trk.get("title") or f"Track {track_idx}"
                 sha = trk.get("yoto_sha256")
-                icon_ref = get_or_upload_yoto_icon(t_book_id, track_idx=track_idx, token=abs_token)
+                src_ch_idx = resolve_source_chapter_idx(_get_book_chapters(t_book_id), start_sec, end_sec)
+                icon_ref = get_or_upload_yoto_icon(
+                    t_book_id,
+                    track_idx=track_idx,
+                    token=abs_token,
+                    chapter_idx=src_ch_idx,
+                )
                 icon_stream_url = f"{server_url}/s/icon/{slot_id}/{track_idx}.png" if server_url else ""
 
                 if sha:
