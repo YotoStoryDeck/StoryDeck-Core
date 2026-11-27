@@ -19,10 +19,13 @@ import { timersMixin } from './timers.js';
 const App = {
   container: null,
   statusBadge: null,
+  _wakeLock: null,
   init() {
     this.container = document.getElementById('app');
     this.statusBadge = document.getElementById('brokerStatus');
     this.applyDisplayBrightness();
+    this.syncWakeLock();
+    window.addEventListener('pointerdown', () => this.syncWakeLock(), { passive: true, once: true });
     window.__storydeckSyncSettings = () => BrokerApi.syncDeviceSettings();
     // Suppress native browser context / long-press callout menus on touch tablets
     window.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -30,17 +33,58 @@ const App = {
     this.startSleepTimerTicker();
     this.startInactivityTracker();
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && !state.isOffline && state.isApproved !== false) {
-        const prevScreen = state.screen;
-        BrokerApi.getDeviceConfig()
-          .then(() => {
-            this.syncActiveDevicePlayback();
-            this.updateLiveTelemetryUI(prevScreen);
-          })
-          .catch(() => {});
+      if (!document.hidden) {
+        this.syncWakeLock();
+        if (!state.isOffline && state.isApproved !== false) {
+          const prevScreen = state.screen;
+          BrokerApi.getDeviceConfig()
+            .then(() => {
+              this.syncActiveDevicePlayback();
+              this.updateLiveTelemetryUI(prevScreen);
+            })
+            .catch(() => {});
+        }
       }
     });
+    document.addEventListener('fullscreenchange', () => {
+      if (state.screen === 'grownups') this.render();
+    });
     this.bootstrap();
+  },
+  async acquireWakeLock() {
+    if (state.parentSettings?.keepAwake === false) {
+      await this.releaseWakeLock();
+      return;
+    }
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator) || document.hidden || this._wakeLock) {
+      return;
+    }
+    try {
+      const sentinel = await navigator.wakeLock.request('screen');
+      this._wakeLock = sentinel;
+      sentinel.addEventListener('release', () => {
+        if (this._wakeLock === sentinel) this._wakeLock = null;
+      });
+    } catch (e) {
+      console.debug('Screen Wake Lock unavailable or deferred:', e?.message || e);
+    }
+  },
+  async releaseWakeLock() {
+    if (!this._wakeLock) return;
+    try {
+      await this._wakeLock.release();
+    } catch (e) {
+      // Ignore already-released sentinel errors
+    } finally {
+      this._wakeLock = null;
+    }
+  },
+  syncWakeLock() {
+    if (state.parentSettings?.keepAwake === false) {
+      this.releaseWakeLock();
+    } else {
+      this.acquireWakeLock();
+    }
   },
   applyDisplayBrightness() {
     if (!this.container) return;

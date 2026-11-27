@@ -43,7 +43,8 @@ export const state = {
     bedtime: '19:00',
     wakeTime: '07:00',
     brightness: 80, // 10% to 100% display backlight
-    clockSize: 2    // 0 = small, 1 = medium, 2 = large
+    clockSize: 2,   // 0 = small, 1 = medium, 2 = large
+    keepAwake: true // Screen Wake Lock when kiosk is visible
   },
   sleepTimerRemainingSec: 0, // countdown ticker in seconds
   localSessionActive: false, // true ONLY if current audio was initiated/controlled on this screen

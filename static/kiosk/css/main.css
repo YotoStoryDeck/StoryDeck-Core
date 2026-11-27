@@ -80,6 +80,7 @@ body.kiosk-mode {
   background: var(--paper);
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -90,6 +91,7 @@ body.kiosk-mode .note {
 body.kiosk-mode .frame {
   width: 100vw !important;
   height: 100vh !important;
+  height: 100dvh !important;
   border-radius: 0 !important;
   box-shadow: none !important;
 }
@@ -119,12 +121,21 @@ body.kiosk-custom-res .series-row .tile {
 }
 
 body.kiosk-mode .nowbar {
-  height: 64px;
+  height: calc(64px + env(safe-area-inset-bottom));
+  padding: 0 max(18px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(18px, env(safe-area-inset-left));
 }
 
 body.kiosk-mode .topnav {
-  height: 56px;
-  padding: 0 24px;
+  height: calc(56px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) max(24px, env(safe-area-inset-right)) 0 max(24px, env(safe-area-inset-left));
+}
+
+body.kiosk-mode .np {
+  padding: max(16px, env(safe-area-inset-top)) max(26px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(26px, env(safe-area-inset-left));
+}
+
+body.kiosk-mode .gu-header {
+  padding-top: max(12px, env(safe-area-inset-top));
 }
 
 /* Kiosk with Explicit Resolution (Centered Frame or Custom Tablet Viewport) */

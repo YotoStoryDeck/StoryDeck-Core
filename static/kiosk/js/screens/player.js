@@ -88,14 +88,16 @@ export const PlayerScreen = {
 
     const barFill = el.querySelector('.bar i');
     const barThumb = el.querySelector('.bar b');
-    if (barFill) barFill.style.width = `${pct}%`;
-    if (barThumb) barThumb.style.left = `${pct}%`;
-
     const timesEl = el.querySelector('.times');
-    if (timesEl) {
-      const spans = timesEl.querySelectorAll('span');
-      if (spans[0]) spans[0].textContent = Utils.mmss(pos);
-      if (spans[1]) spans[1].textContent = `-${Utils.mmss(dur - pos)}`;
+    if (el.dataset.scrubbing !== '1') {
+      if (barFill) barFill.style.width = `${pct}%`;
+      if (barThumb) barThumb.style.left = `${pct}%`;
+
+      if (timesEl) {
+        const spans = timesEl.querySelectorAll('span');
+        if (spans[0]) spans[0].textContent = Utils.mmss(pos);
+        if (spans[1]) spans[1].textContent = `-${Utils.mmss(dur - pos)}`;
+      }
     }
 
     const toggleBtn = el.querySelector('[data-act="toggle"]');
@@ -107,9 +109,11 @@ export const PlayerScreen = {
     const volFill = el.querySelector('.volbar i');
     const volThumb = el.querySelector('.volbar-thumb');
     const volText = el.querySelector('.vol-text');
-    if (volFill) volFill.style.width = `${vol}%`;
-    if (volThumb) volThumb.style.left = `${vol}%`;
-    if (volText) volText.textContent = `${vol}%${devMaxVol < 100 ? ` (Max ${devMaxVol}%)` : ''}`;
+    if (el.dataset.volDragging !== '1') {
+      if (volFill) volFill.style.width = `${vol}%`;
+      if (volThumb) volThumb.style.left = `${vol}%`;
+      if (volText) volText.textContent = `${vol}%${devMaxVol < 100 ? ` (Max ${devMaxVol}%)` : ''}`;
+    }
 
     const topEl = el.querySelector('.nptop');
     if (topEl) {
@@ -174,14 +178,18 @@ export const PlayerScreen = {
           <div class="npinfo">
             <div class="t clickable-card" data-act="inspect-card" title="View book details and tracklist">${Utils.esc(c.title)}</div>
             <div class="c">${subLine}</div>
-            <div class="bar">
-              <i style="width: ${pct}%;"></i>
-              <b style="left: ${pct}%;"></b>
+            <div class="bar-wrap" data-act="seek-bar" title="Seek playback position">
+              <div class="bar">
+                <i style="width: ${pct}%;"></i>
+                <b style="left: ${pct}%;"></b>
+              </div>
             </div>
             <div class="times"><span>${Utils.mmss(pos)}</span><span>-${Utils.mmss(dur - pos)}</span></div>
             <div class="ctrls">
               <span class="ic" data-act="prev" title="Previous Chapter">&#9198;</span>
+              <button type="button" class="ic-skip" data-act="back30" title="Back 30 seconds">-30s</button>
               <div class="big" data-act="toggle" title="${state.isPlaying ? 'Pause' : 'Play'}">${state.isPlaying ? '&#10074;&#10074;' : '&#9654;'}</div>
+              <button type="button" class="ic-skip" data-act="fwd30" title="Forward 30 seconds">+30s</button>
               <span class="ic" data-act="next" title="Next Chapter">&#9197;</span>
               <span class="vol">
                 <span class="vol-btn" data-act="vol-down" title="Volume Down">&#128264;</span>

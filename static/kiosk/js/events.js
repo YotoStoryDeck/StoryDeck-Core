@@ -1,10 +1,11 @@
 import { state } from './state.js';
 import { BrokerApi } from './broker-api.js';
 import { handleGrownupsChange, handleGrownupsClick, bindGrownupsInputs } from './events_grownups.js';
-import { handlePlayerAction } from './events_player.js';
+import { handlePlayerAction, bindPlayerScrubbing } from './events_player.js';
 
 export const eventsMixin = {
   bindEvents() {
+    bindPlayerScrubbing(this);
     this.container.addEventListener('change', (e) => {
       handleGrownupsChange(this, e);
     });

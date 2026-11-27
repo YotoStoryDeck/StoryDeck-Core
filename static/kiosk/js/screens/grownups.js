@@ -20,6 +20,10 @@ export const GrownUpsScreen = {
     const brightness = state.parentSettings.brightness ?? 80;
     const clockSize = state.parentSettings.clockSize ?? 2;
     const clockSizeLabels = ['Small', 'Medium', 'Large'];
+    const keepAwake = state.parentSettings.keepAwake !== false;
+    const wakeLockSupported = typeof navigator !== 'undefined' && ('wakeLock' in navigator);
+    const isFullscreen = typeof document !== 'undefined' && Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+    const canFullscreen = typeof document !== 'undefined' && Boolean(document.documentElement?.requestFullscreen || document.documentElement?.webkitRequestFullscreen);
 
     return `
       <div class="grownups-screen">
@@ -207,6 +211,37 @@ export const GrownUpsScreen = {
                 `).join('')}
               </div>
               <div class="gu-info-text">Configures 7-segment clock scale for bedside readability across the room.</div>
+            </div>
+
+            <div class="gu-section">
+              <div class="gu-sec-title">
+                <span>Keep Screen Awake (Wake Lock)</span>
+                <span style="font-size:12px; font-weight:600; color:${keepAwake ? '#16a34a' : '#8c8272'};">
+                  ${keepAwake ? 'On' : 'Off'}${!wakeLockSupported ? ' (Requires HTTPS/localhost)' : ''}
+                </span>
+              </div>
+              <div class="gu-row">
+                <button class="gu-pill-btn ${keepAwake ? 'active' : ''}" data-act="gu-set-wake-lock" data-val="true">Keep Screen Awake</button>
+                <button class="gu-pill-btn ${!keepAwake ? 'active' : ''}" data-act="gu-set-wake-lock" data-val="false">Allow OS Sleep</button>
+              </div>
+              <div class="gu-info-text">Prevents tablet auto-lock while StoryDeck is visible so the Night Clock and sleep timer stay active.</div>
+            </div>
+
+            <div class="gu-section">
+              <div class="gu-sec-title">
+                <span>Tablet Fullscreen Mode</span>
+                <span style="font-size:12px; font-weight:600; color:#8c8272;">${isFullscreen ? 'Active' : 'Windowed'}</span>
+              </div>
+              <div class="gu-row">
+                <button class="gu-pill-btn ${isFullscreen ? 'active' : ''}" data-act="gu-toggle-fullscreen" ${!canFullscreen ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''}>
+                  ${isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                </button>
+              </div>
+              <div class="gu-info-text">
+                ${canFullscreen
+                  ? 'Hides browser address bars on Android/Fire tablets when not launched as an installed PWA.'
+                  : 'Fullscreen API is not available in this browser (use Add to Home Screen for standalone fullscreen).'}
+              </div>
             </div>
           ` : ''}
 

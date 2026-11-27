@@ -136,6 +136,7 @@ export const BrokerApi = {
       if (conf.settings.bedtime !== undefined) state.parentSettings.bedtime = conf.settings.bedtime;
       if (conf.settings.wakeTime !== undefined) state.parentSettings.wakeTime = conf.settings.wakeTime;
       if (conf.settings.clockSize !== undefined) state.parentSettings.clockSize = conf.settings.clockSize;
+      if (conf.settings.keepAwake !== undefined) state.parentSettings.keepAwake = Boolean(conf.settings.keepAwake);
       if (conf.settings.blockRemotePlayback !== undefined) state.blockRemotePlayback = Boolean(conf.settings.blockRemotePlayback);
       changed = true;
     }

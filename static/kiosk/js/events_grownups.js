@@ -116,6 +116,33 @@ export function handleGrownupsClick(app, e) {
     app.render();
     return;
   }
+  // Grown-ups Screen Wake Lock Toggle
+  const guWakeBtn = e.target.closest('[data-act="gu-set-wake-lock"]');
+  if (guWakeBtn) {
+    state.parentSettings.keepAwake = (guWakeBtn.dataset.val === 'true');
+    state.persistParentSettings();
+    if (typeof app.syncWakeLock === 'function') app.syncWakeLock();
+    app.render();
+    return;
+  }
+  // Grown-ups Tablet Fullscreen Toggle
+  const guFsBtn = e.target.closest('[data-act="gu-toggle-fullscreen"]');
+  if (guFsBtn) {
+    try {
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+      if (fsEl) {
+        const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exitFn) Promise.resolve(exitFn.call(document)).catch(() => {});
+      } else {
+        const root = document.documentElement;
+        const reqFn = root?.requestFullscreen || root?.webkitRequestFullscreen;
+        if (reqFn) Promise.resolve(reqFn.call(root)).catch(() => {});
+      }
+    } catch (err) {
+      console.debug('Fullscreen toggle skipped:', err?.message || err);
+    }
+    return;
+  }
   // Grown-ups Restart Action (non-blocking two-tap confirm)
   const guRestartBtn = e.target.closest('[data-act="gu-restart"]');
   if (guRestartBtn) {
