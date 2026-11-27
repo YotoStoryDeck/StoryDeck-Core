@@ -36,6 +36,7 @@ def admin_toggle_highlight(media_id: str):
     data = request.get_json(silent=True) or {}
     is_hi = bool(data.get("is_highlight", False))
     database.set_item_highlight(media_id, is_hi)
+    database.bump_catalog_revision()
     return jsonify({"ok": True, "is_highlight": is_hi})
 
 
@@ -46,6 +47,7 @@ def admin_toggle_physical(media_id: str):
     data = request.get_json(silent=True) or {}
     has_phys = bool(data.get("has_physical", False))
     database.set_item_physical(media_id, has_phys)
+    database.bump_catalog_revision()
     return jsonify({"ok": True, "has_physical": has_phys})
 
 
@@ -56,6 +58,7 @@ def admin_force_refresh_catalog(profile_id: Optional[str] = None):
     """Forces an immediate library sync and catalog rotation re-roll."""
     from core.scheduler import perform_library_refresh
     count = perform_library_refresh()
+    database.bump_catalog_revision()
     return jsonify({"ok": True, "count": count, "profile_id": profile_id})
 
 
@@ -68,6 +71,7 @@ def admin_update_shared_rule():
     value = data.get("value")
     if key:
         database.set_shared_rule(key, value)
+        database.bump_catalog_revision()
         return jsonify({"ok": True})
     return jsonify({"ok": False, "error": "Missing key"}), 400
 
@@ -101,6 +105,7 @@ def admin_update_permission():
     prof["yoto"] = yoto_cfg
 
     database.upsert_profile(prof_id, prof)
+    database.bump_catalog_revision()
     return jsonify({"ok": True})
 
 
@@ -128,6 +133,7 @@ def admin_batch_permissions():
             is_highlight=is_highlight,
             has_physical=has_physical
         )
+        database.bump_catalog_revision()
         logger.info("Batch permissions update succeeded: %s", result)
         return jsonify({"ok": True, **result})
     except Exception as e:
@@ -148,6 +154,7 @@ def admin_batch_highlight():
             return jsonify({"ok": False, "error": "media_ids must be a non-empty list"}), 400
 
         count = database.batch_update_media_highlight(media_ids, is_highlight)
+        database.bump_catalog_revision()
         return jsonify({"ok": True, "updated_count": count, "is_highlight": is_highlight})
     except Exception as e:
         logger.exception("Error during batch highlight update: %s", e)
@@ -165,6 +172,7 @@ def admin_batch_physical():
         if not isinstance(media_ids, list) or not media_ids:
             return jsonify({"ok": False, "error": "media_ids must be a non-empty list"}), 400
         count = database.batch_update_media_physical(media_ids, has_phys)
+        database.bump_catalog_revision()
         return jsonify({"ok": True, "updated_count": count, "has_physical": has_phys})
     except Exception as e:
         logger.exception("Error during batch physical update: %s", e)
@@ -177,6 +185,7 @@ def admin_sync_upstream_catalogs():
     """Queries upstream Yoto and Audiobookshelf servers to refresh media_items cache."""
     from core.scheduler import perform_library_refresh
     count = perform_library_refresh()
+    database.bump_catalog_revision()
     return jsonify({"ok": True, "count": count})
 
 
@@ -216,4 +225,5 @@ def admin_update_abs_item_tags():
     finally:
         conn.close()
 
+    database.bump_catalog_revision()
     return jsonify({"ok": True, "tags": tags})

@@ -1,6 +1,7 @@
 """System Settings, Third-Party API Credentials & Master API Key Management."""
 import os
 import json
+import time
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -215,3 +216,19 @@ def regenerate_master_api_key() -> str:
         return new_key
     finally:
         conn.close()
+
+
+def get_catalog_revision() -> int:
+    """Returns monotonically increasing catalog/curation revision counter."""
+    try:
+        return int(get_system_settings().get("catalog_revision") or 0)
+    except Exception:
+        return 0
+
+
+def bump_catalog_revision() -> int:
+    """Increments catalog_revision so connected Touch displays reload live curation without reboot."""
+    cur = get_catalog_revision()
+    new_rev = max(cur + 1, int(time.time()))
+    set_system_setting("catalog_revision", new_rev)
+    return new_rev

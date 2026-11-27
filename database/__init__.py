@@ -34,7 +34,8 @@ from .curation import (
 )
 from .settings import (
     DEFAULT_SSO_CONFIG, get_system_settings, get_sso_config, set_system_setting, get_api_credentials, update_api_credentials,
-    get_master_api_key_details, get_master_api_key, regenerate_master_api_key
+    get_master_api_key_details, get_master_api_key, regenerate_master_api_key,
+    get_catalog_revision, bump_catalog_revision
 )
 from .firmware import (
     list_firmware_releases, get_firmware_release, get_latest_firmware_release,
@@ -64,6 +65,7 @@ __all__ = [
     "batch_update_profile_media_permissions",
     "DEFAULT_SSO_CONFIG", "get_system_settings", "get_sso_config", "set_system_setting", "get_api_credentials", "update_api_credentials",
     "get_master_api_key_details", "get_master_api_key", "regenerate_master_api_key",
+    "get_catalog_revision", "bump_catalog_revision",
     "list_firmware_releases", "get_firmware_release", "get_latest_firmware_release",
     "upsert_firmware_release", "set_active_latest_firmware", "delete_firmware_release",
 ]

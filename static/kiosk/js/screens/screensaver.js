@@ -55,10 +55,12 @@ export const ScreensaverScreen = {
    */
   getColorInfo() {
     const now = new Date();
-    const nowM = now.getHours() * 60 + now.getMinutes();
+    const tz = state.deviceConfig?.server_timezone || null;
+    const { hours, minutes, dateStr } = Utils.getClockParts(now, tz);
+    const nowM = hours * 60 + minutes;
     const [wakeH, wakeM] = (state.parentSettings.wakeTime || '07:00').split(':').map(Number);
     const wakeT = wakeH * 60 + wakeM;
-    const isNight = Utils.isBedtimeWindow(state.parentSettings.bedtime, state.parentSettings.wakeTime, now);
+    const isNight = Utils.isBedtimeWindow(state.parentSettings.bedtime, state.parentSettings.wakeTime, now, tz);
 
     const isMorning = !isNight && (nowM >= wakeT && nowM < wakeT + 120);
 
@@ -72,7 +74,7 @@ export const ScreensaverScreen = {
       statusText = 'OK to Wake';
     }
 
-    return { color, isNight, isMorning, statusText, now };
+    return { color, isNight, isMorning, statusText, now, hours, minutes, dateStr };
   },
 
   /**
@@ -131,9 +133,7 @@ export const ScreensaverScreen = {
     const el = document.getElementById('screensaverScreen');
     if (!el) return false;
 
-    const { color, now } = this.getColorInfo();
-    const minutes = now.getMinutes();
-    const hours = now.getHours();
+    const { color, hours, minutes, dateStr } = this.getColorInfo();
     const timeKey = `${hours}:${minutes}`;
     const sleepMinsLeft = state.sleepTimerRemainingSec > 0 ? Math.ceil(state.sleepTimerRemainingSec / 60) : 0;
 
@@ -170,8 +170,7 @@ export const ScreensaverScreen = {
     if (containerEl) containerEl.style.transform = `translate(${offX}px, ${offY}px)`;
     if (dateEl) {
       dateEl.style.transform = `translate(${offX}px, ${offY}px)`;
-      const dateOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
-      dateEl.textContent = now.toLocaleDateString('en-US', dateOptions);
+      dateEl.textContent = dateStr;
     }
 
     // 3. If minute and dimensions/size haven't changed, skip digit rebuilding completely!
@@ -217,7 +216,7 @@ export const ScreensaverScreen = {
   },
 
   render() {
-    const { color, now } = this.getColorInfo();
+    const { color, hours: rawHours, minutes, dateStr } = this.getColorInfo();
     const sizeIdx = Math.max(0, Math.min(2, state.parentSettings.clockSize ?? 2));
     const { H, availW, availH } = this.getDigitHeight(sizeIdx);
     const t = Math.max(4, Math.floor(H / 8));
@@ -226,9 +225,7 @@ export const ScreensaverScreen = {
     const vlen = Math.floor((H - 3 * t) / 2);
 
     // 12-hour clock format matching firmware: ((tm_hour + 11) % 12) + 1
-    const rawHours = now.getHours();
     const hours = ((rawHours + 11) % 12) + 1;
-    const minutes = now.getMinutes();
     this._lastTimeKey = `${rawHours}:${minutes}`;
     this._lastDimKey = `${availW}x${availH}:${sizeIdx}`;
 
@@ -249,12 +246,9 @@ export const ScreensaverScreen = {
       `;
     }
 
-    const dateOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
-    const dateStr = now.toLocaleDateString('en-US', dateOptions);
-
     const shiftX = [0, 4, 6, 4, 0, -4, -6, -4];
     const shiftY = [-4, -3, 0, 3, 4, 3, 0, -3];
-    const shiftIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / 10) % 8;
+    const shiftIdx = Math.floor((rawHours * 60 + minutes) / 10) % 8;
     const offX = shiftX[shiftIdx];
     const offY = shiftY[shiftIdx];
 

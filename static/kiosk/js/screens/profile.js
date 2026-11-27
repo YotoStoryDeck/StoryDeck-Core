@@ -8,7 +8,7 @@ import { Utils } from '../config.js';
  */
 export const ProfileScreen = {
   getTimeGreeting() {
-    const hour = new Date().getHours();
+    const { hours: hour } = Utils.getClockParts(new Date(), state.deviceConfig?.server_timezone || null);
     if (hour >= 5 && hour < 12) {
       return 'WHO IS LISTENING THIS MORNING?';
     } else if (hour >= 12 && hour < 17) {

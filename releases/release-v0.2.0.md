@@ -5,74 +5,63 @@
 # StoryDeck Core v0.2.0 — First Full Stable Release
 
 **Release Tag:** `v0.2.0`
-**Classification:** First Full Production Release (Stable · `:latest`)
-**Target Architecture:** Docker Multi-Arch (`linux/amd64`, `linux/arm64`) & Python 3.11+ (`ffmpeg` included)
+**Release Channel:** Full Production Release (`:latest`)
+**Supported Platforms:** Docker (`linux/amd64`, `linux/arm64`) & Python 3.11+
 **Release Date:** November 27, 2026
 
 ---
 
 ## 📻 Overview
 
-Welcome to **StoryDeck Core `v0.2.0`** — the **first full stable release** (`:latest`) of the open-source, self-hosted orchestration hub for the StoryDeck smart audio ecosystem!
+Welcome to **StoryDeck Core `v0.2.0`** — the **first full stable release** of the open-source audio hub for your **Yoto Players**, **Audiobookshelf** library, **Tablet Kiosks**, and **StoryDeck Touch** displays!
 
-StoryDeck Core unifies [Yoto](https://my.yotoplay.com/) players and cards with optional [Audiobookshelf](https://www.audiobookshelf.org/) audiobook libraries inside a **single container**, delivering real-time MQTT playback telemetry, embedded audio streaming and offline Yoto card uploads, a **Parent Portal (`/` & `/admin`)**, a self-contained **Tablet Kiosk (`/kiosk/`)**, and microcontroller-optimized APIs for [**StoryDeck Touch**](https://github.com/YotoStoryDeck/StoryDeck-Touch) (`ESP32-S3`).
-
----
-
-## 🌟 Major Highlights
-
-### 1. 🎧 Consolidated Streaming, Offline & Native MQTT Engine (`core/bridge/`)
-Zero external bridge container required — all streaming, transcoding, icon rendering, and MQTT telemetry run natively inside StoryDeck Core:
-* **On-the-Fly Streaming (`64kbps` mono MP3, HTTP `206`):** Embedded `ffmpeg` audio streamer with 5-second `WarmBuffer` pre-encoding, `QuietSpots` silence-snapped chapter cuts, 99-track sliding window (`window_start`, step `90`), tap-time ABS resume with pause-without-`Range` handling (`2s`/`15s` rewind), and 2.5s silent cue + MQTT chapter auto-jump.
-* **Three Offline MYO Upload Modes:**
-  * `⏱️ 5h Next Window` (`offline_next`) with whole-book shortcut for books $\le 5\text{h}$ and 1.5h chapter-snapped bedtime lookback.
-  * `💾 Whole Book` (`offline_book`) with binary-search packing into $\le 99$ tracks.
-  * `📚 Whole Series` (`offline_series`) supporting `chapters` and `condense` packing, `selected`/`active`/`beginning` start points, and automatic rolling advancement to the next book on completion.
-* **Live Hybrid Mixed Playlists & Hardware Flash Retention:** Publishes playable mixed playlists every 5 tracks during builds (`save_mixed_playlist`), preserves distinct `yoto_card_id` entries across `offline_retention_limit` with series-aware LRU pruning, reuses cached Content-Addressed `yoto_sha256` audio blocks, and recovers automatically from interrupted builds (`resume_interrupted_jobs`) as well as transient DNS, network, `5xx`/`429`, and `401` token-expiry blips during long uploads.
-* **Card Chapter Tools:** `own_place` local SQLite progress isolation, Yoto CDN cover uploads & content-digest deduplicated 16×16 pixel chapter icons (with `resolve_source_chapter_idx()` mapping for split/multi-book tracks), Audible/Audnexus Chapter Finder, and legacy MYO card-to-ABS Viterbi position transfer.
+Everything runs inside a single self-hosted container with no external bridge services required. Whether listeners are browsing curated stories on a tablet, listening offline during road trips, or you are controlling room players from your phone, StoryDeck Core brings it all together in one easy-to-manage place.
 
 ---
 
-### 2. 📱 Parent Portal (`/`), Admin Console (`/admin`) & Physical MYO Pairing
-* **Unified Responsive Navigation:** Shared collapsible left sidebar and self-service **✏️ Profile** modal across `/` and `/admin` with live Core status/version indicator (`#coreVersionBadge`) and upstream release checker.
-* **Profile Avatar Carousel & Target Yoto Player Selector:** Quick-switch between household child profiles, **`🎧 My ABS`** personal library override (with dedicated `user_<uid>` Personal Card or ephemeral `guest_stream`), and household Yoto players (`🟢`/`🔴`/`✈️ AWAY` indicators, `Default` & `Online` tags, and cover-art MQTT playback confirmation overlay).
-* **Full Transport & Library Browser:** `0–100%` volume slider honoring Yoto day/night limits, scrub seek, `±30s`, speed, sleep timers, Continue Listening, strict audio-only filtering (`ABSClient.is_valid_audio_item`), and source filters (`All`, `Audiobookshelf`, `Yoto Cards & MYO`).
-* **Live Card Pairing & Switcher:** Live MQTT physical MYO card detection (`Editable MYO` & blank `hMkni`), permanent nicknames, instant mode switching (`⚡ Stream` ↔ `⏱️ 5h` ↔ `💾 Whole Book` ↔ `📚 Series`), and Yoto Cloud playlist management.
+## 🌟 What You Can Do with StoryDeck Core
+
+### 1. 🎧 Stream Audiobookshelf & Build Offline Yoto Cards in One Place
+* **Instant Streaming to Any Yoto Player:** Start any audiobook from Audiobookshelf directly on a physical Yoto Player and automatically pick up right where you left off—including two-way listening progress syncing.
+* **Three Flexible Offline Modes for Travel & Bedtime:**
+  * **Next 5 Hours:** Great for multi-day trips or long books—loads the next five hours of listening onto a card with gentle rewind, or grabs the whole book automatically if it is under 5 hours.
+  * **Whole Book:** Downloads an entire audiobook cleanly onto a single MYO card.
+  * **Whole Series:** Packs multiple books in a series onto one card and automatically advances finished books to the next title—choose whether to start from Book #1, the current unfinished book, or the book you tapped.
+* **Play While It Builds & Keep Flash Warm:** Offline builds become playable on your Yoto Player within minutes while the remaining chapters finish uploading, recover automatically from temporary internet drops or restarts, and keep recently played books cached on your Yoto Player for Wi-Fi-free travel.
+* **Chapter Artwork & Markers:** Automatically generates colorful 16×16 chapter pixel art (or matches community/custom chapter icons) and looks up accurate chapter markers for long audiobooks.
 
 ---
 
-### 3. 🤹 Self-Contained Tablet Kiosk (`/kiosk/`)
-Built specifically for modern bedside iPads (iPadOS 14+), Android/Fire tablets, and wall displays:
-* **Zero External CDN Dependencies:** Self-hosted `Fredoka` font (`static/kiosk/fonts/fredoka-latin.woff2`), custom **StoryDeck** vector & high-DPI raster app icons (`icon.svg`, `icon-192.png`, `icon-512.png`, `180×180` `apple-touch-icon.png`), Screen Wake Lock API, `100dvh` viewport, and iOS safe-area insets.
-* **Smooth Responsive Performance:** Single-request `GET /api/kids/<child>/catalog` endpoint with stale-while-revalidate caching, in-place telemetry & `PlayerScreen.tick()` updates without DOM wipes, deterministic intrinsic-ratio catalog grid tiles, and fluid Night Clock screensaver.
-* **Smart Mode Adaptation:** Client-side search across title/author/series, `abs_configured`-gated `All` / `ABS` / `Yoto` source filter chips (automatically hidden in Yoto-only standalone deployments), profile & player-scoped **Recently Played** (`device:<id>` history), pointer-drag scrub/volume bars, resolution presets (`?tablet10`, `?tablet43`, `?tablet8`, `?1080p`), and instant 4-digit PIN Grown-Ups gate.
+### 2. 📱 Control Everything from the Web Portal (`/`) & Admin Console (`/admin`)
+* **Mobile-Friendly Player Remote:** Adjust volume smoothly within your Yoto App's day and night limits, skip ±30 seconds, jump to specific chapters, change playback speed, set sleep timers, and view live playback status across every Yoto Player.
+* **Quick Profile & Player Switching:** Tap between **Listener Profiles** (or switch to **`🎧 My ABS`** for your own personal Audiobookshelf listening on a dedicated personal card) and target any online player.
+* **Easy Physical Card Pairing:** Tap a physical MYO card onto a player to pair, nickname, or switch that card between **Streaming** and **Offline** modes, or browse and organize your existing Yoto Cloud playlists.
 
 ---
 
-### 4. 🔐 Users, RBAC, SSO / OIDC & Audiobookshelf Account Linking
-* **Household Accounts & Roles:** Initial Super Admin protection, `admin` / `member` / `guest` tiers, and optional Trusted LAN / Sitter access.
-* **Unified Sign-In & Enterprise SSO (`/login`):** Native **OpenID Connect (OIDC) Authorization Code + PKCE (`S256`)** and Reverse-Proxy ForwardAuth (`Authentik`, `Authelia`, `Keycloak`, `Pocket ID`, `Cloudflare Access`, or generic OIDC) with `groups` role sync and `post_logout_redirect_uri`.
-* **Audiobookshelf Account Auto-Linking:** Matches signed-in users by email or username and mints/revokes user-scoped ABS API keys automatically, with automatic master-key fallback and self-service controls.
+### 3. 🤹 Turn Any Tablet into a Standalone Audio Jukebox (`/kiosk/`)
+Give listeners an independent, distraction-free way to pick stories on any modern iPad (`iPadOS 14+`), Android tablet, Amazon Fire tablet, or desktop browser:
+* **Shared Profile Switcher:** A welcome screen with time-of-day greetings lets each listener tap their own avatar to open only the library curated for them.
+* **Fast Search, Filtering & Series Browsing:** Browse the cover-art grid, jump into grouped multi-book series, revisit **Recently Played** titles (tracked per listener or per player), or search by title, author, or series—automatically hiding Audiobookshelf filters if you run StoryDeck in Yoto-only mode.
+* **Touch-Friendly Player & Night Clock:** Includes smooth drag-to-seek and volume sliders, ±30s skip buttons, a dimmable **Night Clock** screensaver, and full-screen tablet app support when added to your Home Screen.
+* **Instant PIN-Protected Settings Menu:** Lock a tablet to a specific room speaker, configure sleep schedules and screen brightness, and protect settings behind a 4-digit **Settings PIN**.
 
 ---
 
-### 5. 🗄️ Modular SQLite Schema v17, Curation & Hardware Fleet Management
-* **Automated Schema Migrations:** Zero-downtime SQLite schema progression through `v17` under `database/` (`schema.py`, `profiles.py`, `devices.py`, `curation.py`, `history.py`, `settings.py`, `auth.py`).
-* **Dual-Limit Curation & Manual Series Overrides:** Separate ESP32 Touch (`60` default) and Tablet Kiosk (`0` = unlimited) limits following deterministic Superset ordering, atomic whole-series rotation, `has_physical` tracking, and drag-and-drop **Yoto Card Series & Sequence Overrides**.
-* **Zero-Trust Device Onboarding & Remote OTA:** Automatic quarantine for new Touch/Kiosk displays, rotating per-device JWTs, Core-hosted ESP32 `firmware.bin` 1-click OTA push/rollback, remote MicroSD artwork cache pruning, and `✈️ AWAY` travel proximity interlocks protecting roaming Yoto players from bedtime curfews.
+### 4. 🎯 Listener Profiles, Curation & Travel Safety
+* **Per-Listener Libraries & Discovery Limits:** Choose which Audiobookshelf tags, series, and Yoto cards each Listener Profile can access, prevent sequels from appearing before Book #1, and group commercial and MYO Yoto cards into ordered series.
+* **Separate Limits for Bedside Touch & Tablets:** Keep small bedside controllers fast and uncluttered with a tailored rotation while letting larger tablets browse the full approved library.
+* **Travel Proximity Protection:** Automatically detects when a Yoto Player is away from home so scheduled sleep timers do not unexpectedly stop travel listening, and warns before starting playback on remote players.
 
 ---
 
-### 6. 🧪 Overhauled Test Suite & GitHub Actions CI
-* **Hardened Synthetic Unit Suite (`126` tests):** Domain-organized `tests/unit/` suite guarded by `NetworkGuard` and ephemeral SQLite databases, requiring zero local DB or credentials.
-* **Optional Sanitized Local DB Snapshot Mode:** Reads `data/broker.db` strictly read-only (`?mode=ro`) into temporary space and scrubs all secrets, tokens, emails, and LAN IPs before validation (`python scripts/run_tests.py --with-local-db`).
-* **CI & Failure Commit Reporting:** Automated Python 3.11 + `ffmpeg` unit tests, Node 24 frontend JS syntax checks, and structured failure commit comments.
+### 5. 🔐 Multi-User Access, Single Sign-On & Touch Hardware Support
+* **Flexible Access Roles:** Supports **Admin**, **Member**, and optional **Trusted LAN Guest** access, optional Single Sign-On (**Authentik**, **Authelia**, **Keycloak**, **Pocket ID**, **Cloudflare Access**, or OIDC), and automatic personal Audiobookshelf account matching.
+* **StoryDeck Touch Support (`ESP32-S3`):** New hardware displays appear in a quarantine approval queue before joining and support 1-click firmware updates, rollbacks, and remote cover cache cleanup from the Admin Console.
 
 ---
 
-## 🚀 Deployment & Upgrade Guide
-
-### Docker Compose (`:latest` / `:v0.2.0`)
+## 🚀 Quick Start & Upgrading
 
 ```yaml
 services:
@@ -89,7 +78,7 @@ services:
       - ./cache:/app/cache
 ```
 
-Pull and recreate the container (SQLite migrations through schema `v17` apply automatically on boot without manual intervention):
+To install or upgrade an existing container (database upgrades run automatically on startup):
 
 ```bash
 docker compose pull
@@ -97,18 +86,19 @@ docker compose up -d
 ```
 
 > [!NOTE]
-> StoryDeck Core is fully self-contained and does **not** require a separate bridge container or `YOTO_CLIENT_SECRET` (public OAuth2 PKCE is handled natively inside Admin Settings). Audiobookshelf is optional—Core also runs standalone using only Yoto Cloud.
+> Everything runs inside this single container—no separate bridge service is required. Audiobookshelf is completely optional if you only want to manage and play your Yoto cards.
 
 ---
 
-## 📋 Compatibility Matrix
+## 📋 System Compatibility
 
-| Component | Minimum Version | Recommended | Notes |
-| :--- | :--- | :--- | :--- |
-| **StoryDeck Touch Firmware** | `v0.1.0` | `v0.1.0+` | Physical ESP32-S3 bedside display (`?client=touch` / OTA) |
-| **Audiobookshelf** | `v2.4.0` | `v2.10.0+` | Optional audiobook & podcast library source |
-| **Yoto Play Account** | Any | MyYoto + Developer Client ID | Public PKCE OAuth configured in Admin UI |
-| **Container Runtime** | Docker 20.10+ | Docker 26.0+ | Multi-arch `linux/amd64` & `linux/arm64` |
+| Component | Recommended | Notes |
+| :--- | :--- | :--- |
+| **Yoto Account** | Any Yoto account + Developer Client ID | Quick sign-in setup inside Admin Settings |
+| **Audiobookshelf** | `v2.10.0+` (minimum `v2.4.0`) | Optional audiobook and podcast library |
+| **StoryDeck Touch Firmware** | `v0.1.0+` | Dedicated bedside ESP32-S3 touchscreen display |
+| **Tablet Kiosk Browsers** | iPadOS 14+, Android Chrome/WebView, Fire OS | Also works in any modern desktop browser |
+| **Docker** | Docker 20.10+ with Compose v2 | Multi-arch (`linux/amd64` & `linux/arm64`) |
 
 ---
 

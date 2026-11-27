@@ -7,6 +7,7 @@ services:
       - "${PORT:-5055}:5055"
     environment:
       - PORT=5055
+      - TZ=${TZ:-UTC}
       - APP_VERSION=${APP_VERSION:-}
       - SECRET_KEY=${SECRET_KEY:-}
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1}

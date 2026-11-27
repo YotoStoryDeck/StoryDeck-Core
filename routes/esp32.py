@@ -1,6 +1,7 @@
 """
 ESP32 device client communication, health checks, profile catalog feeds, and playback dispatch.
 """
+import os
 import json
 import time
 import secrets
@@ -385,8 +386,11 @@ def get_device_config():
             dev_settings = {}
     can_switch = (len(profile_summaries) > 1) and not bool(assigned_prof)
     latest_rel = database.get_latest_firmware_release()
+    server_tz = (os.environ.get("TZ") or "").strip()
     return jsonify({
         "device_id": device_id or "unknown",
+        "server_timezone": server_tz,
+        "catalog_revision": database.get_catalog_revision(),
         "is_approved": is_approved,
         "assigned_profile": assigned_prof or "",
         "parent_pin": parent_pin,

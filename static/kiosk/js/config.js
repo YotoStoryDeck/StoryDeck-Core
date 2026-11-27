@@ -102,12 +102,44 @@ export const Utils = {
         return h ? `${h}h ${m}m` : `${m}m`;
       })(),
 
-  isBedtimeWindow: (bedtime = '19:00', wakeTime = '07:00', now = new Date()) => {
+  getClockParts: (now = new Date(), timeZone = null) => {
+    const tz = String(timeZone || '').trim();
+    const dateOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
+    if (tz && !['utc', 'etc/utc', 'gmt'].includes(tz.toLowerCase())) {
+      try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit',
+        }).formatToParts(now);
+        const hPart = parts.find((p) => p.type === 'hour')?.value;
+        const mPart = parts.find((p) => p.type === 'minute')?.value;
+        if (hPart !== undefined && mPart !== undefined) {
+          return {
+            hours: Number(hPart) % 24,
+            minutes: Number(mPart),
+            dateStr: now.toLocaleDateString('en-US', { ...dateOptions, timeZone: tz }),
+          };
+        }
+      } catch {
+        // Invalid/unsupported IANA timezone -> fall back to tablet's local clock
+      }
+    }
+    return {
+      hours: now.getHours(),
+      minutes: now.getMinutes(),
+      dateStr: now.toLocaleDateString('en-US', dateOptions),
+    };
+  },
+
+  isBedtimeWindow: (bedtime = '19:00', wakeTime = '07:00', now = new Date(), timeZone = null) => {
     const [bH, bM] = (bedtime || '19:00').split(':').map(Number);
     const [wH, wM] = (wakeTime || '07:00').split(':').map(Number);
     const nightT = bH * 60 + bM;
     const wakeT = wH * 60 + wM;
-    const nowM = now.getHours() * 60 + now.getMinutes();
+    const { hours, minutes } = Utils.getClockParts(now, timeZone);
+    const nowM = hours * 60 + minutes;
     if (nightT > wakeT) {
       return (nowM >= nightT || nowM < wakeT);
     }
