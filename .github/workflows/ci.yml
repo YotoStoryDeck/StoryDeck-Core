@@ -26,6 +26,9 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
 
+      - name: Install ffmpeg for audio silence-detection tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Run synthetic unit test suite
         run: python scripts/run_tests.py --unit-only -v
 

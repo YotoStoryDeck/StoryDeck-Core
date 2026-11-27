@@ -495,10 +495,12 @@ class TestUIOverhaulAndSSO(IsolatedTestCase):
                 "btnAutoMatchPortalAbs",
                 "btnPortalUnlinkAbs",
             ):
+                id_marker = f'id="{shared_id}"'
+                count = html.count(id_marker)
                 self.assertEqual(
-                    html.count(f'id="{shared_id}"'),
+                    count,
                     1,
-                    f"Expected exactly 1 #{shared_id} in {route}, found {html.count(f'id=\"{shared_id}\"')}",
+                    f"Expected exactly 1 #{shared_id} in {route}, found {count}",
                 )
 
             self.assertIn('onclick="openSelfServiceProfileModal()"', html)
