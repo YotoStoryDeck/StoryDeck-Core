@@ -3,6 +3,20 @@ import { state } from './state.js';
 import { BrokerApi } from './broker-api.js';
 
 export const lifecycleMixin = {
+  _renderQuarantineHtml(subtitleHtml) {
+    return `
+      <div class="profile-screen" style="text-align:center; padding:40px;">
+        <div style="font-size:48px; margin-bottom:16px;">⏳</div>
+        <div class="profile-title">DEVICE PENDING APPROVAL</div>
+        <div class="profile-subtitle" style="margin-top:12px; max-width:480px; line-height:1.5;">
+          ${subtitleHtml}<br>
+          Please approve this device in StoryDeck Web Admin under <b>Hardware</b>.<br><br>
+          <i>Checking approval status every 5 seconds...</i>
+        </div>
+      </div>
+    `;
+  },
+
   async bootstrap() {
     try {
       // 1. Device Registration Handshake
@@ -10,17 +24,9 @@ export const lifecycleMixin = {
       if (regResult.status === 'pending_approval') {
         this.statusBadge.textContent = 'Device Quarantined (Pending Approval)';
         this.statusBadge.className = 'broker-badge connecting';
-        this.container.innerHTML = `
-          <div class="profile-screen" style="text-align:center; padding:40px;">
-            <div style="font-size:48px; margin-bottom:16px;">⏳</div>
-            <div class="profile-title">DEVICE PENDING APPROVAL</div>
-            <div class="profile-subtitle" style="margin-top:12px; max-width:480px; line-height:1.5;">
-              Device <code>${Utils.esc(CONFIG.DEVICE_ID)}</code> has announced itself to the broker.<br>
-              Please approve this device in the Broker Web Admin under <b>Hardware</b> to enable access tokens.<br><br>
-              <i>Checking approval status every 5 seconds...</i>
-            </div>
-          </div>
-        `;
+        this.container.innerHTML = this._renderQuarantineHtml(
+          `Device <code>${Utils.esc(CONFIG.DEVICE_ID)}</code> has announced itself to the broker.`
+        );
         setTimeout(() => this.bootstrap(), 5000);
         return;
       }
@@ -31,13 +37,11 @@ export const lifecycleMixin = {
       // 3. Launch Initial Screen
       if (state.mode === 'standalone') {
         const allPlayers = state.getAllAvailablePlayers();
-        if (allPlayers.length > 0) {
+        if (allPlayers.length > 0 && !state.activeDevice) {
           state.setActiveDevice(state.resolveActiveDevice(null));
         }
-        if (state.profiles.length > 0) {
-          await BrokerApi.fetchLiveCatalog(state.profiles[0].id);
-          this.syncActiveDevicePlayback();
-        }
+        await BrokerApi.fetchLiveCatalog(null, state.activeDevice?.id);
+        this.syncActiveDevicePlayback();
         state.setScreen('catalog');
         this.render();
       } else if (conf.assigned_profile && state.profiles.some(p => p.id === conf.assigned_profile)) {
@@ -54,9 +58,6 @@ export const lifecycleMixin = {
     }
   },
   /**
-   * Transitions UI into offline overlay and remembers prior screen for instant recovery
-   */
-  /**
    * Transitions UI into Quarantine / Pairing screen when unapproved by admin
    */
   enterQuarantineState() {
@@ -66,17 +67,9 @@ export const lifecycleMixin = {
     state.isApproved = false;
     this.statusBadge.textContent = 'Device Quarantined (Pending Approval)';
     this.statusBadge.className = 'broker-badge connecting';
-    this.container.innerHTML = `
-      <div class="profile-screen" style="text-align:center; padding:40px;">
-        <div style="font-size:48px; margin-bottom:16px;">⏳</div>
-        <div class="profile-title">DEVICE PENDING APPROVAL</div>
-        <div class="profile-subtitle" style="margin-top:12px; max-width:480px; line-height:1.5;">
-          This controller (<code>${Utils.esc(CONFIG.DEVICE_ID)}</code>) is in quarantine.<br>
-          Please approve this device in StoryDeck Web Admin under <b>Hardware</b>.<br><br>
-          <i>Checking approval status every 5 seconds...</i>
-        </div>
-      </div>
-    `;
+    this.container.innerHTML = this._renderQuarantineHtml(
+      `This controller (<code>${Utils.esc(CONFIG.DEVICE_ID)}</code>) is in quarantine.`
+    );
     if (!this._quarantineTimer) {
       this._quarantineTimer = setInterval(async () => {
         try {
@@ -127,8 +120,11 @@ export const lifecycleMixin = {
       // Re-register if needed
       await BrokerApi.registerDevice();
       const conf = await BrokerApi.getDeviceConfig();
-      if (state.activeProfile) {
-        await BrokerApi.fetchLiveCatalog(state.activeProfile.id);
+      if (state.mode === 'standalone') {
+        await BrokerApi.fetchLiveCatalog(null, state.activeDevice?.id);
+        this.syncActiveDevicePlayback();
+      } else if (state.activeProfile) {
+        await BrokerApi.fetchLiveCatalog(state.activeProfile.id, state.activeDevice?.id);
         this.syncActiveDevicePlayback();
       }
       this.statusBadge.textContent = `Connected to Broker (${state.profiles.length} Profiles)`;

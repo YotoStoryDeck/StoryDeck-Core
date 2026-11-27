@@ -139,9 +139,12 @@ def _resolve_client_type() -> str:
 @require_device_jwt
 def get_child_abs(child_name: str):
     """
-    Returns filtered Audiobookshelf books for the profile.
+    Returns filtered Audiobookshelf books for the profile (or player-scoped standalone catalog when child_name is '__all__').
     Scoped by profile account token, dedicated library ID, and/or tag filter.
     """
+    if child_name.lower() in ("__all__", "all", "standalone"):
+        dev_id = (request.args.get("device_id") or "").strip()
+        return jsonify(database.get_catalog_items_for_device(dev_id, media_type="abs"))
     client_type = _resolve_client_type()
     try:
         books = database.get_catalog_items_for_profile(child_name.lower(), "abs", client_type=client_type)
@@ -158,7 +161,10 @@ def get_child_abs(child_name: str):
 @esp32_bp.route("/api/kids/<child_name>/yoto", methods=["GET"])
 @require_device_jwt
 def get_child_yoto(child_name: str):
-    """Returns curated Yoto playlists/cards for the profile based on shared and profile rules."""
+    """Returns curated Yoto playlists/cards for the profile (or player-scoped standalone catalog when child_name is '__all__')."""
+    if child_name.lower() in ("__all__", "all", "standalone"):
+        dev_id = (request.args.get("device_id") or "").strip()
+        return jsonify(database.get_catalog_items_for_device(dev_id, media_type="yoto"))
     client_type = _resolve_client_type()
     try:
         playlists = database.get_catalog_items_for_profile(child_name.lower(), "yoto", client_type=client_type)
@@ -500,7 +506,10 @@ def play_media():
         if not ok:
             return jsonify({"ok": False, "error": err_msg}), code
 
-        database.record_playback(media_id, child)
+        if child != "default" or not device_id:
+            database.record_playback(media_id, child)
+        if device_id:
+            database.record_playback(media_id, f"device:{device_id}")
         return jsonify({
             "ok": True,
             "status": "playing",
@@ -585,7 +594,10 @@ def play_media():
         if not ok:
             return jsonify({"ok": False, "error": err_msg}), code
 
-        database.record_playback(media_id, child)
+        if child != "default" or not device_id:
+            database.record_playback(media_id, child)
+        if device_id:
+            database.record_playback(media_id, f"device:{device_id}")
         return jsonify({
             "ok": True,
             "status": "playing",

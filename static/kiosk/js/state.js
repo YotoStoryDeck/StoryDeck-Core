@@ -25,6 +25,7 @@ export const state = {
   catalog: [],
   deviceConfig: { allow_profile_switch: true, assigned_profile: null },
   deviceToken: null,
+  refreshToken: null,
   activeProfile: null,
   activeDevice: null,
   isDevicePickerOpen: false,
@@ -159,6 +160,13 @@ export const state = {
   },
   setPlaying(playing) {
     this.isPlaying = playing;
+  },
+  isCardCurrentlyPlaying(card) {
+    if (!this.isPlaying || !this.card || !card) return false;
+    const cid = card.id || card.cardId;
+    const activeId = this.card.id || this.card.cardId;
+    if (cid && activeId && cid === activeId) return true;
+    return Boolean(card.title && this.card.title && card.title === this.card.title);
   }
 };
 state.init();

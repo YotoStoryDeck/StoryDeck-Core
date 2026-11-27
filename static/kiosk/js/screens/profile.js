@@ -20,12 +20,20 @@ export const ProfileScreen = {
 
   render() {
     const greeting = this.getTimeGreeting();
-    const cards = state.profiles.map(p => `
-      <div class="profile-card" data-profile="${Utils.esc(p.id)}">
-        <img class="profile-avatar" src="${Utils.esc(p.avatar_url)}" onerror="this.src='https://api.dicebear.com/7.x/bottts/svg?seed=${Utils.esc(p.id)}'">
-        <div class="profile-name">${Utils.esc(p.display_name)}</div>
-      </div>
-    `).join('');
+    const _ui = (typeof window !== 'undefined' && window.StoryDeckUI) ? window.StoryDeckUI : null;
+    const cards = state.profiles.map(p => {
+      const avatarHtml = _ui
+        ? _ui.renderProfileAvatarHtml(p, 88)
+        : `<img class="profile-avatar" src="${Utils.esc(p.avatar_url || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">`;
+      return `
+        <div class="profile-card" data-profile="${Utils.esc(p.id)}">
+          <div class="profile-avatar" style="display:flex;align-items:center;justify-content:center;overflow:hidden;">
+            ${avatarHtml}
+          </div>
+          <div class="profile-name">${Utils.esc(p.display_name)}</div>
+        </div>
+      `;
+    }).join('');
 
     return `
       <div class="profile-screen">

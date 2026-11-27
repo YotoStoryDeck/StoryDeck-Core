@@ -21,13 +21,7 @@ export const DetailScreen = {
       `;
     }
 
-    const isCurrentlyPlayingThis = Boolean(
-      state.isPlaying && state.card && (
-        (c.id && (state.card.id === c.id || state.card.cardId === c.id)) ||
-        (c.cardId && (state.card.cardId === c.cardId || state.card.id === c.cardId)) ||
-        (c.title && state.card.title === c.title)
-      )
-    );
+    const isCurrentlyPlayingThis = state.isCardCurrentlyPlaying(c);
 
     const total = (c.chapters || []).reduce((a, ch) => a + (ch.duration || 0), 0);
     const rows = (c.chapters || []).map((ch, i) => {

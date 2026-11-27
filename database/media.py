@@ -486,6 +486,30 @@ def get_playback_history(profile_id: str) -> Dict[str, str]:
 
 
 
+def get_device_playback_history(device_id: str) -> Dict[str, str]:
+    """Returns dictionary of media_id -> ISO timestamp recorded specifically for a player (`device:<id>`)."""
+    clean_id = (device_id or "").strip().lower()
+    if not clean_id:
+        return {}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT media_id, last_played_at FROM media_playback_history WHERE profile_id = ?;",
+            (f"device:{clean_id}",)
+        )
+        return {
+            r["media_id"]: str(r["last_played_at"] or "")
+            for r in cur.fetchall()
+            if r["last_played_at"]
+        }
+    except Exception as e:
+        logger.warning("Error reading device playback history for %s: %s", device_id, e)
+        return {}
+    finally:
+        conn.close()
+
+
 def get_all_playback_history() -> Dict[str, str]:
     """Returns a dict mapping media_id -> most recent last_played_at across ALL profiles."""
     with get_db_connection() as conn:

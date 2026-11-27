@@ -100,5 +100,17 @@ export const Utils = {
         const h = Math.floor(s / 3600);
         const m = Math.floor((s % 3600) / 60);
         return h ? `${h}h ${m}m` : `${m}m`;
-      })()
+      })(),
+
+  isBedtimeWindow: (bedtime = '19:00', wakeTime = '07:00', now = new Date()) => {
+    const [bH, bM] = (bedtime || '19:00').split(':').map(Number);
+    const [wH, wM] = (wakeTime || '07:00').split(':').map(Number);
+    const nightT = bH * 60 + bM;
+    const wakeT = wH * 60 + wM;
+    const nowM = now.getHours() * 60 + now.getMinutes();
+    if (nightT > wakeT) {
+      return (nowM >= nightT || nowM < wakeT);
+    }
+    return (nowM >= nightT && nowM < wakeT);
+  }
 };

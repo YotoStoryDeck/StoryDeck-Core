@@ -12,6 +12,12 @@ export function handleGrownupsChange(app, e) {
       state.lockedPlayerId = found.id;
       state.persistParentSettings();
       app.syncActiveDevicePlayback();
+      if (state.mode === 'standalone') {
+        BrokerApi.fetchLiveCatalog(null, found.id).then(() => {
+          app.syncActiveDevicePlayback();
+          app.render();
+        });
+      }
     }
   }
 }
@@ -39,16 +45,20 @@ export function handleGrownupsClick(app, e) {
     state.mode = newMode;
     state.persistParentSettings();
     if (newMode === 'standalone') {
-      // Switch directly to catalog without profile requirement
+      // Switch directly to household + player catalog without profile requirement
       const allPlayers = state.getAllAvailablePlayers();
       if (!state.activeDevice && allPlayers.length > 0) {
         state.setActiveDevice(allPlayers[0]);
       }
-      if (state.profiles.length > 0) {
-        BrokerApi.fetchLiveCatalog(state.profiles[0].id).then(() => {
-          app.syncActiveDevicePlayback();
-        });
-      }
+      BrokerApi.fetchLiveCatalog(null, state.activeDevice?.id).then(() => {
+        app.syncActiveDevicePlayback();
+        app.render();
+      });
+    } else if (state.activeProfile) {
+      BrokerApi.fetchLiveCatalog(state.activeProfile.id, state.activeDevice?.id).then(() => {
+        app.syncActiveDevicePlayback();
+        app.render();
+      });
     }
     app.render();
     return;
@@ -149,6 +159,7 @@ export function bindGrownupsInputs(app) {
       const val = parseInt(e.target.value, 10);
       state.parentSettings.brightness = val;
       if (brightnessLabel) brightnessLabel.textContent = `${val}%`;
+      if (typeof app.applyDisplayBrightness === 'function') app.applyDisplayBrightness();
     });
     brightnessSlider.addEventListener('change', (e) => {
       state.persistParentSettings();

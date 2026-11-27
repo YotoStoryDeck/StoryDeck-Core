@@ -1,6 +1,5 @@
 import { state } from '../state.js';
-import { Utils } from '../config.js';
-import { BrokerApi } from '../broker-api.js';
+import { CONFIG, Utils } from '../config.js';
 
 /**
  * Screen 5: Grown-Ups Settings Screen Component
@@ -155,12 +154,12 @@ export const GrownUpsScreen = {
               </div>
               <div class="gu-row">
                 <button class="gu-pill-btn ${!isStandalone ? 'active' : ''}" data-act="gu-set-mode" data-mode="core">Core Managed (Profiles)</button>
-                <button class="gu-pill-btn ${isStandalone ? 'active' : ''}" data-act="gu-set-mode" data-mode="standalone">Standalone Cloud (Players)</button>
+                <button class="gu-pill-btn ${isStandalone ? 'active' : ''}" data-act="gu-set-mode" data-mode="standalone">Player Mode (No Profiles)</button>
               </div>
               <div class="gu-info-text">
                 ${isStandalone 
-                  ? '<b>Standalone Mode:</b> Connects directly to Yoto Cloud without a local server. Single household account-wide card library.' 
-                  : '<b>Core Mode:</b> Connects to StoryDeck Core hub with Audiobookshelf streaming, multi-user profiles, and local proxy caching.'}
+                  ? '<b>Player Mode:</b> Browses the full household library without requiring a profile switch, tracking playback per selected Yoto player.' 
+                  : '<b>Core Mode:</b> Filters books, permissions, and history per individual listener profile.'}
               </div>
             </div>
           ` : ''}
@@ -175,7 +174,7 @@ export const GrownUpsScreen = {
               <div class="gu-slider-wrap">
                 <input type="range" class="gu-slider" min="10" max="100" value="${brightness}" data-act="gu-set-brightness" id="guBrightnessSlider">
               </div>
-              <div class="gu-info-text">Backlight PWM control (10% to 100%). Controls CH422G EXIO2 on Waveshare hardware.</div>
+              <div class="gu-info-text">Viewport dimming control (10% to 100%) for bedside screens and tablet displays.</div>
             </div>
 
             <div class="gu-section">

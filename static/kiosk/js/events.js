@@ -38,11 +38,20 @@ export const eventsMixin = {
       const devOpt = e.target.closest('[data-act="select-device"]');
       if (devOpt) {
         const did = devOpt.dataset.deviceId;
-        const target = (state.activeProfile?.players || []).find(p => p.id === did);
+        const pool = state.mode === 'standalone'
+          ? state.getAllAvailablePlayers()
+          : (state.activeProfile?.players || state.getAllAvailablePlayers());
+        const target = pool.find(p => p.id === did);
         if (target) {
           state.setActiveDevice(target);
           this.syncActiveDevicePlayback();
           this.render();
+          if (state.mode === 'standalone') {
+            BrokerApi.fetchLiveCatalog(null, target.id).then(() => {
+              this.syncActiveDevicePlayback();
+              this.render();
+            });
+          }
         }
         return;
       }
@@ -51,11 +60,25 @@ export const eventsMixin = {
         state.isDevicePickerOpen = false;
         this.render();
       }
-      // 3. Catalog Tab Navigation (All / Series / ABS / Yoto)
+      // 3. Catalog Tab Navigation (All / Series / Recent)
       const tab = e.target.closest('.tab-btn[data-tab]');
       if (tab && state.screen === 'catalog') {
         state.setActiveTab(tab.dataset.tab);
         this.render();
+        return;
+      }
+      // 3b. Series Badge Jump from Detail Screen
+      const seriesJumpBtn = e.target.closest('.series-badge-btn[data-series]');
+      if (seriesJumpBtn) {
+        const targetSeries = (seriesJumpBtn.dataset.series || '').trim().toLowerCase();
+        state.setActiveTab('series');
+        state.setScreen('catalog');
+        this.render();
+        if (targetSeries) {
+          const sec = Array.from(this.container.querySelectorAll('.series-section[data-series-name]'))
+            .find(el => (el.dataset.seriesName || '').trim().toLowerCase() === targetSeries);
+          if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
         return;
       }
       // 4. Media Card Selection (Catalog Grid)

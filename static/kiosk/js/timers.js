@@ -1,4 +1,5 @@
 import { state } from './state.js';
+import { Utils } from './config.js';
 import { BrokerApi } from './broker-api.js';
 import { ScreensaverScreen } from './screens/screensaver.js';
 
@@ -7,21 +8,7 @@ export const timersMixin = {
    * Returns true if current wall-clock time falls within the configured bedtime window.
    */
   isBedtimeNow() {
-    const bedtimeStr = state.parentSettings.bedtime || '19:00';
-    const wakeTimeStr = state.parentSettings.wakeTime || '07:00';
-    const [bH, bM] = bedtimeStr.split(':').map(Number);
-    const [wH, wM] = wakeTimeStr.split(':').map(Number);
-    const bMinutes = bH * 60 + bM;
-    const wMinutes = wH * 60 + wM;
-    const now = new Date();
-    const curMinutes = now.getHours() * 60 + now.getMinutes();
-    if (bMinutes > wMinutes) {
-      // Overnight schedule (e.g. 19:00 -> 07:00)
-      return (curMinutes >= bMinutes || curMinutes < wMinutes);
-    } else {
-      // Same-day schedule
-      return (curMinutes >= bMinutes && curMinutes < wMinutes);
-    }
+    return Utils.isBedtimeWindow(state.parentSettings.bedtime, state.parentSettings.wakeTime);
   },
   /**
    * Evaluates if sleep timer should arm or reset upon playback state change or setting modification.

@@ -181,14 +181,14 @@ export const CatalogScreen = {
         }
         return `
           <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
-            <img src="${Utils.esc(c.cover || c.img)}" onerror="this.src='https://placehold.co/122x193/2b2622/ffffff?text=Book'">
+            <img src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
             ${seqLabel ? `<span class="badge-seq">${Utils.esc(seqLabel)}</span>` : ''}
             ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
           </div>
         `;
       }).join('');
       return `
-        <div class="series-section">
+        <div class="series-section" data-series-name="${Utils.esc(groupName)}">
           <div class="series-header">
             <span class="series-title">${Utils.esc(groupName)}</span>
             <span class="series-count">(${items.length} ${items.length === 1 ? 'card' : 'cards'})</span>
@@ -199,16 +199,6 @@ export const CatalogScreen = {
         </div>
       `;
     }).join('');
-  },
-  isPlayedPast7Days(lp) {
-    if (!lp) return false;
-    try {
-      const cutoff = Date.now() - (7 * 86400 * 1000);
-      const t = new Date(lp).getTime();
-      return !isNaN(t) && t >= cutoff;
-    } catch (e) {
-      return false;
-    }
   },
   render() {
     if (state.activeTab === 'series') {
@@ -221,24 +211,21 @@ export const CatalogScreen = {
       `;
     }
     if (state.activeTab === 'recent') {
-      const recentItems = state.catalog.filter(c => {
-        if (c.daily) return true;
-        return this.isPlayedPast7Days(c.last_played_at);
-      });
+      const recentItems = (state.catalog || []).filter(c => c.daily || Boolean(c.last_played_at && String(c.last_played_at).trim()));
       recentItems.sort((a, b) => {
         if (Boolean(a.daily) !== Boolean(b.daily)) return a.daily ? -1 : 1;
-        return (b.last_played_at || '').localeCompare(a.last_played_at || '');
+        return String(b.last_played_at || '').localeCompare(String(a.last_played_at || ''));
       });
-      const tiles = recentItems.map(c => `
+      const tiles = recentItems.slice(0, 24).map(c => `
         <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
-          <img src="${Utils.esc(c.cover || c.img)}" onerror="this.src='https://placehold.co/122x193/2b2622/ffffff?text=Book'">
+          <img src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
           ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
         </div>
       `).join('');
       return `
         ${this.renderTopNav()}
         <div class="grid">
-          ${tiles.length ? tiles : '<div style="padding:40px; color:#888; text-align:center;">No audiobooks played in the past 7 days.</div>'}
+          ${tiles.length ? tiles : '<div style="padding:40px; color:#888; text-align:center;">No recently played audiobooks yet.</div>'}
         </div>
         ${PlayerScreen.renderNowbar()}
       `;
@@ -248,16 +235,15 @@ export const CatalogScreen = {
       if (state.activeTab === 'yoto') return c.source === 'yoto' || c.type === 'yoto';
       return true;
     });
-    // In flat lists, sort highlights first, then by title ignoring articles 'The', 'A', 'An'
-    filtered.sort((a, b) => {
-      if (!!b.is_highlight !== !!a.is_highlight) {
-        return b.is_highlight ? 1 : -1;
-      }
-      return this.cleanTitle(a.title).localeCompare(this.cleanTitle(b.title));
-    });
-    const tiles = filtered.map(c => `
+    const sorted = (typeof window !== 'undefined' && window.StoryDeckSeries)
+      ? window.StoryDeckSeries.sortItems(filtered, { sortBy: 'name', highlightsFirst: true })
+      : filtered.sort((a, b) => {
+          if (!!b.is_highlight !== !!a.is_highlight) return b.is_highlight ? 1 : -1;
+          return this.cleanTitle(a.title).localeCompare(this.cleanTitle(b.title));
+        });
+    const tiles = sorted.map(c => `
       <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
-        <img src="${Utils.esc(c.cover || c.img)}" onerror="this.src='https://placehold.co/122x193/2b2622/ffffff?text=Book'">
+        <img src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
         ${(c.is_highlight && state.activeTab === 'all') ? '<span class="badge-star" title="Highlighted">★</span>' : ''}
         ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
       </div>

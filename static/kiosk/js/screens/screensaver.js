@@ -1,4 +1,5 @@
 import { state } from '../state.js';
+import { Utils } from '../config.js';
 
 /**
  * 7-Segment Night-Clock Screensaver
@@ -35,21 +36,9 @@ export const ScreensaverScreen = {
   getColorInfo() {
     const now = new Date();
     const nowM = now.getHours() * 60 + now.getMinutes();
-
-    const [bedH, bedM] = (state.parentSettings.bedtime || '19:00').split(':').map(Number);
     const [wakeH, wakeM] = (state.parentSettings.wakeTime || '07:00').split(':').map(Number);
-
-    const nightT = bedH * 60 + bedM;
     const wakeT = wakeH * 60 + wakeM;
-
-    let isNight = false;
-    if (nightT > wakeT) {
-      // Overnight (e.g. 19:00 -> 07:00)
-      isNight = (nowM >= nightT || nowM < wakeT);
-    } else {
-      // Daytime window
-      isNight = (nowM >= nightT && nowM < wakeT);
-    }
+    const isNight = Utils.isBedtimeWindow(state.parentSettings.bedtime, state.parentSettings.wakeTime, now);
 
     const isMorning = !isNight && (nowM >= wakeT && nowM < wakeT + 120);
 

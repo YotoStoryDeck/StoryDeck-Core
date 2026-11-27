@@ -12,13 +12,7 @@ export function handlePlayerAction(app, e) {
     if (act === 'playstart') {
       const btn = document.getElementById('btn-play-book') || actBtn;
       const targetCard = state.previewCard || state.card;
-      const isSameActive = Boolean(
-        state.isPlaying && state.card && targetCard && (
-          (targetCard.id && (state.card.id === targetCard.id || state.card.cardId === targetCard.id)) ||
-          (targetCard.title && state.card.title === targetCard.title)
-        )
-      );
-      if (isSameActive) {
+      if (state.isCardCurrentlyPlaying(targetCard)) {
         state.setScreen('now');
         app.render();
         return;
@@ -108,7 +102,6 @@ export function handlePlayerAction(app, e) {
       BrokerApi.sendPlayerControl('volume', { volume: newVol });
       return;
     }
-    if (act === 'gear-button') {
   }
   return false;
 }

@@ -11,15 +11,21 @@ export const PlayerScreen = {
     const isOnline = Boolean(dev?.online);
     const isPlaying = Boolean(state.isPlaying || dev?.is_playing);
 
-    // Live status dot styling reflecting real device status and location
-    const isAway = isOnline && dev?.is_home === false;
-    let dotStyle = 'background:#9ca3af; box-shadow:none;'; // default offline
+    const _ui = (typeof window !== 'undefined' && window.StoryDeckUI) ? window.StoryDeckUI : null;
+    const devForMeta = { ...dev, online: isOnline, is_playing: isPlaying };
+    const statusMeta = _ui ? _ui.getDeviceStatusMeta(devForMeta) : {
+      isAway: isOnline && dev?.is_home === false,
+      isPlaying,
+      online: isOnline,
+    };
+    const isAway = statusMeta.isAway;
+    let dotStyle = 'background:#9ca3af; box-shadow:none;';
     if (isAway) {
-      dotStyle = 'background:#ea580c; box-shadow:0 0 8px #ea580c;'; // orange / away
+      dotStyle = 'background:#ea580c; box-shadow:0 0 8px #ea580c;';
     } else if (isPlaying) {
-      dotStyle = 'background:#e5352b; box-shadow:0 0 8px #e5352b;'; // red / playing
+      dotStyle = 'background:#e5352b; box-shadow:0 0 8px #e5352b;';
     } else if (isOnline) {
-      dotStyle = 'background:#16a34a; box-shadow:0 0 8px #16a34a;'; // green / online
+      dotStyle = 'background:#16a34a; box-shadow:0 0 8px #16a34a;';
     }
 
     if (state.card && (isPlaying || dev?.has_card)) {
@@ -42,7 +48,7 @@ export const PlayerScreen = {
             <span class="dot" style="${dotStyle}"></span>
             ${Utils.esc(devName)}${isAway ? ' <span style="font-size:11px;">✈️ AWAY</span>' : ''}
           </div>
-          <img class="nb-thumb" src="${Utils.esc(state.card.cover || state.card.img)}" onerror="this.src='https://placehold.co/122x193/2b2622/ffffff?text=Playing'">
+          <img class="nb-thumb" src="${Utils.esc(state.card.cover || state.card.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
           <div class="nb-txt">
             <div class="nb-title">${Utils.esc(bookTitle)}</div>
             <div class="nb-sub">${bottomLine}</div>

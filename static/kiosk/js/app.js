@@ -22,11 +22,7 @@ const App = {
   init() {
     this.container = document.getElementById('app');
     this.statusBadge = document.getElementById('brokerStatus');
-    // Enable full edge-to-edge Kiosk mode by default (unless framed with ?frame=1)
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('frame') !== '1' && params.get('bezel') !== '1') {
-      document.body.classList.add('kiosk-mode');
-    }
+    this.applyDisplayBrightness();
     window.__storydeckSyncSettings = () => BrokerApi.syncDeviceSettings();
     // Suppress native browser context / long-press callout menus on touch tablets
     window.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -34,6 +30,11 @@ const App = {
     this.startSleepTimerTicker();
     this.startInactivityTracker();
     this.bootstrap();
+  },
+  applyDisplayBrightness() {
+    if (!this.container) return;
+    const val = Math.max(10, Math.min(100, Number(state.parentSettings?.brightness ?? 100) || 100));
+    this.container.style.filter = val < 100 ? `brightness(${val / 100})` : '';
   },
   /**
    * Confirms playback has successfully initiated on the physical player before switching to Now Playing.
@@ -44,8 +45,9 @@ const App = {
     const activeDev = state.activeDevice;
     if (activeDev && activeDev.online && activeDev.is_home === false) {
       if (state.blockRemotePlayback) {
-        alert(`${activeDev.name} is currently away from home (traveling).
-Remote playback from this bedside controller is blocked to avoid disturbing someone traveling.`);
+        const msg = `${activeDev.name} is currently away from home (traveling). Remote playback is blocked.`;
+        if (window.StoryDeckUI?.showToast) window.StoryDeckUI.showToast(msg, 'warning');
+        else alert(msg);
         return;
       } else {
         const proceed = confirm(`${activeDev.name} is currently away from home (traveling).
@@ -64,6 +66,12 @@ Are you sure you want to start audio playback on this remote player?`);
     try {
       const res = await BrokerApi.playMedia(card, chapterIndex);
       if (res && (res.ok || res.status === 'success')) {
+        const nowIso = new Date().toISOString();
+        card.last_played_at = nowIso;
+        const cardKey = card.id || card.cardId;
+        const catEntry = (state.catalog || []).find(c => (c.id || c.cardId) === cardKey);
+        if (catEntry) catEntry.last_played_at = nowIso;
+
         state.setCard(card);
         state.setPreviewCard(card);
         const resolvedIdx = (chapterIndex != null && chapterIndex >= 0)
@@ -81,7 +89,8 @@ Are you sure you want to start audio playback on this remote player?`);
         this.render();
       } else {
         const msg = res?.error || res?.message || 'Playback failed to start';
-        alert(`Could not start playback: ${msg}`);
+        if (window.StoryDeckUI?.showToast) window.StoryDeckUI.showToast(`Could not start playback: ${msg}`, 'danger');
+        else alert(`Could not start playback: ${msg}`);
         if (triggerEl && originalText) {
           triggerEl.innerHTML = originalText;
           triggerEl.style.opacity = '1';
@@ -90,7 +99,9 @@ Are you sure you want to start audio playback on this remote player?`);
       }
     } catch (err) {
       console.error('Playback initiation error:', err);
-      alert(`Playback error: ${err.message || err}`);
+      const errMsg = `Playback error: ${err.message || err}`;
+      if (window.StoryDeckUI?.showToast) window.StoryDeckUI.showToast(errMsg, 'danger');
+      else alert(errMsg);
       if (triggerEl && originalText) {
         triggerEl.innerHTML = originalText;
         triggerEl.style.opacity = '1';
@@ -159,7 +170,7 @@ Are you sure you want to start audio playback on this remote player?`);
     this.render();
     // Fetch dynamic live catalog for selected profile
     try {
-      await BrokerApi.fetchLiveCatalog(p.id);
+      await BrokerApi.fetchLiveCatalog(p.id, state.activeDevice?.id);
       
       // Auto-bind active player's playback state to the Nowbar
       this.syncActiveDevicePlayback();
@@ -195,7 +206,7 @@ Are you sure you want to start audio playback on this remote player?`);
           title: fullTitle,
           chapter_title: chapterTitle,
           author: author,
-          cover: coverUrl || 'https://placehold.co/122x193/2b2622/ffffff?text=Playing',
+          cover: coverUrl || '/static/img/placeholder.png',
           duration: dev.duration || matched?.duration || 1800,
           chapters: matched?.chapters || [{ title: chapterTitle, duration: dev.duration || 1800 }]
         };
@@ -218,13 +229,6 @@ Are you sure you want to start audio playback on this remote player?`);
     this._healthTimer = setInterval(async () => {
       if (state.isOffline) return; // Managed by _pingTimer
       try {
-        const isAlive = await BrokerApi.ping();
-        if (!isAlive) {
-          console.warn('Broker ping check failed! Triggering offline mode.');
-          this.enterOfflineState();
-          return;
-        }
-        // Active background sync (every 5-10s)
         await BrokerApi.getDeviceConfig();
         if (state.isApproved === false) {
           console.warn('[Core] Device is quarantined in Core! Transitioning to pairing screen.');

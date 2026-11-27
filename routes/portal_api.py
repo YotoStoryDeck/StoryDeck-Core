@@ -142,11 +142,13 @@ def start_player_card():
     mqtt = get_mqtt_bridge()
     if mqtt.is_connected and mqtt.play(device_id, card_id, track=chapter, chapter_key=ck_val, track_key=tk_val):
         target_prof = str(data.get("profile_id") or "").strip()
-        if target_prof and target_prof != "__all__":
-            try:
+        try:
+            if target_prof and target_prof != "__all__":
                 database.record_playback(card_id, target_prof)
-            except Exception:
-                pass
+            if device_id:
+                database.record_playback(card_id, f"device:{device_id}")
+        except Exception:
+            pass
         return jsonify({"ok": True, "device_id": device_id, "card_id": card_id, "chapter": chapter, "chapter_key": ck_val, "track_key": tk_val, "via": "mqtt"})
 
     if not clients.yoto_client:
@@ -155,11 +157,13 @@ def start_player_card():
     ok = clients.yoto_client.start_playback(device_id, card_id, chapter=chapter, chapter_key=ck_val, track_key=tk_val)
     if ok:
         target_prof = str(data.get("profile_id") or "").strip()
-        if target_prof and target_prof != "__all__":
-            try:
+        try:
+            if target_prof and target_prof != "__all__":
                 database.record_playback(card_id, target_prof)
-            except Exception:
-                pass
+            if device_id:
+                database.record_playback(card_id, f"device:{device_id}")
+        except Exception:
+            pass
     return jsonify({"ok": ok, "device_id": device_id, "card_id": card_id, "chapter": chapter})
 
 

@@ -10,7 +10,13 @@ from typing import Dict, Any, List, Optional
 
 from .connection import get_db_connection, logger
 from .profiles import get_all_profiles
-from .media import get_catalog_matrix, get_playback_history, record_playback
+from .media import (
+    get_all_playback_history,
+    get_catalog_matrix,
+    get_device_playback_history,
+    get_playback_history,
+    record_playback,
+)
 
 
 def build_catalog_thumb_url(item_id: str, cover_url: str, is_yoto: bool) -> str:
@@ -43,6 +49,119 @@ def sanitize_display_text(text: str) -> str:
     import unicodedata
     decomposed = unicodedata.normalize('NFKD', text)
     return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+def _parse_seq(val, title):
+    seq = None
+    seq_disp = str(val).strip() if (val is not None and str(val).strip() != "") else None
+    if seq_disp:
+        m_lead = re.search(r"(\d+(?:\.\d+)?)", seq_disp)
+        if m_lead:
+            try:
+                seq = float(m_lead.group(1))
+            except (ValueError, TypeError):
+                pass
+    if seq is None and title:
+        m_range = re.search(r"#\s*(\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)|(?:book|volume|vol\.?)\s*(\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)", title, re.IGNORECASE)
+        if m_range:
+            seq_disp = re.sub(r"\s+", "", m_range.group(1) or m_range.group(2))
+            m_lead = re.search(r"(\d+(?:\.\d+)?)", seq_disp)
+            if m_lead:
+                try:
+                    seq = float(m_lead.group(1))
+                except (ValueError, TypeError):
+                    pass
+        else:
+            m_num = re.search(r"#\s*(\d+(?:\.\d+)?)| (?:book|volume|vol\.?)\s*(\d+(?:\.\d+)?)", title, re.IGNORECASE)
+            if m_num:
+                v = m_num.group(1) or m_num.group(2)
+                seq_disp = str(v).strip()
+                try:
+                    seq = float(v)
+                except (ValueError, TypeError):
+                    pass
+    return seq, seq_disp
+
+
+def _serialize_catalog_entry(it: Dict[str, Any], media_type: str, playback_history: Dict[str, str]) -> Dict[str, Any]:
+    """Serializes a catalog matrix item into the canonical Kiosk/Touch/Portal entry shape."""
+    m_type = it.get("type") or ("abs" if media_type == "abs" else "yoto")
+    has_phys = bool(it.get("has_physical", False))
+    title = sanitize_display_text(it.get("title") or "")
+    primary_series = sanitize_display_text(it.get("series") or "")
+    raw_order = it.get("series_order") or ""
+    raw_list = it.get("series_list") or []
+    s_seq, s_seq_disp = _parse_seq(raw_order, title)
+    series_list = []
+    for s in raw_list:
+        s_name = sanitize_display_text(s.get("name") or "")
+        s_ord = s.get("order") or s.get("sequence_display") or s.get("sequence") or raw_order
+        sub_seq, sub_seq_disp = _parse_seq(s_ord, title)
+        if s_name:
+            series_list.append({
+                "name": s_name,
+                "sequence": sub_seq,
+                "sequence_display": sub_seq_disp
+            })
+
+    thumb = build_catalog_thumb_url(it.get("id") or "", it.get("cover_url") or "", is_yoto=(media_type == "yoto"))
+    lp_val = playback_history.get(it.get("id")) or it.get("last_played_at") or ""
+    entry = {
+        "id": it.get("id"),
+        "type": "abs" if m_type == "abs" else "yoto",
+        "title": title,
+        "author": sanitize_display_text(it.get("author") or ("Unknown" if m_type == "abs" else "Yoto")),
+        "thumb": thumb,
+        "is_highlight": bool(it.get("is_highlight")),
+        "has_physical": has_phys,
+        "series": primary_series,
+        "sequence": s_seq,
+        "sequence_display": s_seq_disp,
+        "series_list": series_list,
+        "last_played_at": lp_val,
+        "_last_played_at": lp_val,
+    }
+    if media_type == "yoto":
+        entry["is_myo"] = (m_type == "yoto_myo")
+        entry["groups"] = [s.get("name") for s in raw_list if s.get("name")]
+    return entry
+
+
+def get_catalog_items_for_device(device_id: str = "", media_type: str = "abs") -> List[Dict[str, Any]]:
+    """
+    Returns full household catalog items for Kiosk player/standalone mode (`__all__`),
+    attaching player-scoped `last_played_at` timestamps (device:<id> -> owning profile -> household fallback).
+    """
+    matrix = get_catalog_matrix()
+    items = matrix.get("items", [])
+    clean_dev = (device_id or "").strip().lower()
+
+    playback_history: Dict[str, str] = {}
+    if clean_dev:
+        playback_history.update(get_device_playback_history(clean_dev))
+        for p_key, p_cfg in (get_all_profiles() or {}).items():
+            owned_ids = {str(x).strip().lower() for x in (p_cfg.get("player_ids") or []) if x}
+            if str(p_cfg.get("default_player_id") or "").strip().lower() == clean_dev or clean_dev in owned_ids:
+                for mid, ts in (get_playback_history(p_key) or {}).items():
+                    if mid not in playback_history or ts > playback_history[mid]:
+                        playback_history[mid] = ts
+
+    if not playback_history:
+        playback_history = get_all_playback_history() or {}
+
+    results: List[Dict[str, Any]] = []
+    for it in items:
+        m_type = str(it.get("type") or "")
+        if media_type == "abs" and m_type != "abs":
+            continue
+        if media_type == "yoto" and not m_type.startswith("yoto"):
+            continue
+        entry = _serialize_catalog_entry(it, media_type, playback_history)
+        entry.pop("_last_played_at", None)
+        results.append(entry)
+
+    results.sort(key=lambda x: str(x.get("title") or "").lower())
+    return results
+
 
 def get_catalog_items_for_profile(profile_key: str, media_type: str = "abs", client_type: str = "touch") -> List[Dict[str, Any]]:
     """
@@ -101,37 +220,6 @@ def get_catalog_items_for_profile(profile_key: str, media_type: str = "abs", cli
     if client_type != "kiosk" and rotation_limit <= 0:
         rotation_limit = 60
 
-    def _parse_seq(val, title):
-        seq = None
-        seq_disp = str(val).strip() if (val is not None and str(val).strip() != "") else None
-        if seq_disp:
-            m_lead = re.search(r"(\d+(?:\.\d+)?)", seq_disp)
-            if m_lead:
-                try:
-                    seq = float(m_lead.group(1))
-                except (ValueError, TypeError):
-                    pass
-        if seq is None and title:
-            m_range = re.search(r"#\s*(\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)|(?:book|volume|vol\.?)\s*(\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)", title, re.IGNORECASE)
-            if m_range:
-                seq_disp = re.sub(r"\s+", "", m_range.group(1) or m_range.group(2))
-                m_lead = re.search(r"(\d+(?:\.\d+)?)", seq_disp)
-                if m_lead:
-                    try:
-                        seq = float(m_lead.group(1))
-                    except (ValueError, TypeError):
-                        pass
-            else:
-                m_num = re.search(r"#\s*(\d+(?:\.\d+)?)|(?:book|volume|vol\.?)\s*(\d+(?:\.\d+)?)", title, re.IGNORECASE)
-                if m_num:
-                    v = m_num.group(1) or m_num.group(2)
-                    seq_disp = str(v).strip()
-                    try:
-                        seq = float(v)
-                    except (ValueError, TypeError):
-                        pass
-        return seq, seq_disp
-
     allowed_entries = []
     for it in items:
         m_type = it.get("type")
@@ -146,44 +234,7 @@ def get_catalog_items_for_profile(profile_key: str, media_type: str = "abs", cli
         if hide_physical and has_phys:
             continue
 
-        title = sanitize_display_text(it.get("title") or "")
-        primary_series = sanitize_display_text(it.get("series") or "")
-        raw_order = it.get("series_order") or ""
-        raw_list = it.get("series_list") or []
-        s_seq, s_seq_disp = _parse_seq(raw_order, title)
-        series_list = []
-        for s in raw_list:
-            s_name = sanitize_display_text(s.get("name") or "")
-            s_ord = s.get("order") or s.get("sequence_display") or s.get("sequence") or raw_order
-            sub_seq, sub_seq_disp = _parse_seq(s_ord, title)
-            if s_name:
-                series_list.append({
-                    "name": s_name,
-                    "sequence": sub_seq,
-                    "sequence_display": sub_seq_disp
-                })
-
-        thumb = build_catalog_thumb_url(it.get("id") or "", it.get("cover_url") or "", is_yoto=(media_type == "yoto"))
-
-        entry = {
-            "id": it.get("id"),
-            "type": "abs" if m_type == "abs" else "yoto",
-            "title": title,
-            "author": sanitize_display_text(it.get("author") or ("Unknown" if m_type == "abs" else "Yoto")),
-            "thumb": thumb,
-            "is_highlight": bool(it.get("is_highlight")),
-            "has_physical": has_phys,
-            "series": primary_series,
-            "sequence": s_seq,
-            "sequence_display": s_seq_disp,
-            "series_list": series_list,
-            "last_played_at": playback_history.get(it.get("id")) or it.get("last_played_at") or "",
-            "_last_played_at": playback_history.get(it.get("id")) or it.get("last_played_at") or ""
-        }
-        if media_type == "yoto":
-            entry["is_myo"] = (m_type == "yoto_myo")
-            entry["groups"] = [s.get("name") for s in raw_list if s.get("name")]
-        allowed_entries.append(entry)
+        allowed_entries.append(_serialize_catalog_entry(it, media_type, playback_history))
 
     # Partition into tiers
     recent_items = []

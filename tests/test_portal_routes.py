@@ -281,6 +281,92 @@ class TestPortalRoutes(unittest.TestCase):
             else:
                 database.set_system_setting("exclude_single_card_series", old_val)
 
+    def test_kiosk_recently_played_profile_and_device_scope(self):
+        """Verifies POST /api/play records profile & device:<id> history, and /api/kids/__all__ scopes Recently Played per player."""
+        conn = database.get_db_connection()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO media_items (id, type, title, author, raw_metadata) VALUES (?, ?, ?, ?, ?);",
+                    ("kiosk_book_a", "abs", "Kiosk Recent Book A", "Author A", "{}"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO media_items (id, type, title, author, raw_metadata) VALUES (?, ?, ?, ?, ?);",
+                    ("kiosk_card_b", "yoto", "Kiosk Recent Card B", "Yoto", "{}"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO profile_media_permissions (profile_id, media_id, permission) VALUES (?, ?, 'allowed');",
+                    ("portal_child", "kiosk_book_a"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO profile_media_permissions (profile_id, media_id, permission) VALUES (?, ?, 'allowed');",
+                    ("portal_child", "kiosk_card_b"),
+                )
+                conn.execute("DELETE FROM media_playback_history WHERE media_id IN ('kiosk_book_a', 'kiosk_card_b');")
+        finally:
+            conn.close()
+
+        with self.app.session_transaction() as sess:
+            sess["user_id"] = "test_admin_kiosk"
+            sess["username"] = "test_admin_kiosk"
+            sess["role"] = "admin"
+
+        mock_mgr = MagicMock()
+        mock_mgr.update_profile_primary_card.return_value = {
+            "slot_id": "profile_portal_child",
+            "mode": "streaming",
+            "yoto_card_id": "yoto_slot_1",
+            "title": "Kiosk Recent Book A",
+            "tracks": [{"title": "Chapter 1"}],
+        }
+        mock_yoto = MagicMock()
+        mock_yoto.save_stream_playlist.return_value = "yoto_slot_1"
+        mock_yoto.get_card_detail.return_value = {"content": {"chapters": [{"title": "Track 1", "key": "01"}]}}
+
+        with patch("core.bridge.manager.get_bridge_manager", return_value=mock_mgr), \
+             patch("core.bridge.icons.upload_abs_cover_to_yoto", return_value=""), \
+             patch.object(clients, "yoto_client", mock_yoto), \
+             patch("routes.esp32._dispatch_card_start", return_value=(True, "", 200)):
+            # 1. Play ABS book with profile + bedside player
+            res_abs_play = self.app.post("/api/play", json={
+                "child": "portal_child",
+                "type": "abs",
+                "id": "kiosk_book_a",
+                "device_id": "player_bedside",
+            })
+            self.assertEqual(res_abs_play.status_code, 200)
+
+            # 2. Play Yoto card in standalone (no profile) on another player
+            res_yoto_play = self.app.post("/api/play", json={
+                "child": "",
+                "type": "yoto",
+                "id": "kiosk_card_b",
+                "device_id": "player_den",
+            })
+            self.assertEqual(res_yoto_play.status_code, 200)
+
+        # Profile-scoped catalog sees portal_child play
+        res_prof = self.app.get("/api/kids/portal_child/abs?client=kiosk")
+        self.assertEqual(res_prof.status_code, 200)
+        prof_items = {x["id"]: x for x in res_prof.get_json()}
+        self.assertTrue(prof_items["kiosk_book_a"]["last_played_at"])
+
+        # Player-scoped standalone catalog for player_bedside sees kiosk_book_a (not player_den's card)
+        res_bedside = self.app.get("/api/kids/__all__/abs?client=kiosk&device_id=player_bedside")
+        self.assertEqual(res_bedside.status_code, 200)
+        bed_items = {x["id"]: x for x in res_bedside.get_json()}
+        self.assertTrue(bed_items["kiosk_book_a"]["last_played_at"])
+
+        # Player-scoped standalone catalog for player_den sees kiosk_card_b, not kiosk_book_a
+        res_den_yoto = self.app.get("/api/kids/__all__/yoto?client=kiosk&device_id=player_den")
+        res_den_abs = self.app.get("/api/kids/__all__/abs?client=kiosk&device_id=player_den")
+        self.assertEqual(res_den_yoto.status_code, 200)
+        self.assertEqual(res_den_abs.status_code, 200)
+        den_yoto = {x["id"]: x for x in res_den_yoto.get_json()}
+        den_abs = {x["id"]: x for x in res_den_abs.get_json()}
+        self.assertTrue(den_yoto["kiosk_card_b"]["last_played_at"])
+        self.assertEqual(den_abs["kiosk_book_a"]["last_played_at"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
