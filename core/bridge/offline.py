@@ -252,6 +252,7 @@ class OfflineTranscodeManager:
         base_url: str = "",
         offline_mode: Optional[str] = None,
         hours: float = 5.0,
+        anchor_current_book: bool = False,
     ) -> Dict[str, Any]:
         """Queues a card slot for offline transcoding and Yoto upload."""
         with self._lock:
@@ -275,7 +276,7 @@ class OfflineTranscodeManager:
 
         thread = threading.Thread(
             target=self._run_job_guarded,
-            args=(slot_id, base_url, offline_mode, float(hours or 5.0)),
+            args=(slot_id, base_url, offline_mode, float(hours or 5.0), anchor_current_book),
             daemon=True,
         )
         thread.start()
@@ -287,9 +288,10 @@ class OfflineTranscodeManager:
         base_url: str,
         offline_mode: Optional[str],
         hours: float,
+        anchor_current_book: bool = False,
     ):
         with self._queue_sem:
-            self._run_job(slot_id, base_url, offline_mode=offline_mode, hours=hours)
+            self._run_job(slot_id, base_url, offline_mode=offline_mode, hours=hours, anchor_current_book=anchor_current_book)
 
     def _resolve_slot_abs_token(self, slot: Dict[str, Any]) -> Optional[str]:
         owner_user_id = str(slot.get("owner_user_id") or "").strip()
@@ -334,6 +336,7 @@ class OfflineTranscodeManager:
         speed: float,
         abs_token: Optional[str],
         base_url: str,
+        anchor_current_book: bool = False,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Plans the tracks for an offline copy in 'next' (5-hour rolling window), 'book' (whole book),
@@ -344,7 +347,11 @@ class OfflineTranscodeManager:
         if not abs_item_id or not clients.abs_client:
             return slot.get("tracks") or [], {}
 
-        all_series_books, active_idx, following_books = resolve_slot_series_chain(slot, abs_token=abs_token)
+        all_series_books, active_idx, following_books = resolve_slot_series_chain(
+            slot,
+            abs_token=abs_token,
+            anchor_current_book=anchor_current_book,
+        )
         abs_item_id = str(slot.get("abs_item_id") or abs_item_id).strip()
 
         item_data = clients.abs_client.get_item(abs_item_id, token=abs_token) or {}
@@ -657,6 +664,7 @@ class OfflineTranscodeManager:
         base_url: str,
         offline_mode: Optional[str] = None,
         hours: float = 5.0,
+        anchor_current_book: bool = False,
     ):
         mgr = get_bridge_manager()
         slot = mgr.get_slot(slot_id)
@@ -682,6 +690,7 @@ class OfflineTranscodeManager:
                 speed=speed,
                 abs_token=abs_token,
                 base_url=base_url,
+                anchor_current_book=anchor_current_book,
             )
         except Exception as e:
             logger.warning("Offline track planning fallback for %s: %s", slot_id, e)

@@ -130,6 +130,8 @@ async function openBookModal(book) {
   const followSeriesWrap = document.getElementById("bookModalFollowSeriesWrap");
   const followSeriesChk = document.getElementById("bookModalFollowSeries");
   const followSeriesLbl = document.getElementById("bookModalFollowSeriesLabel");
+  const seriesStartSel = document.getElementById("bookModalSeriesStart");
+  if (seriesStartSel) seriesStartSel.value = "selected";
   if (followSeriesWrap && followSeriesChk && followSeriesLbl) {
     if (!isYoto && book.series) {
       followSeriesWrap.style.display = "block";
@@ -140,6 +142,7 @@ async function openBookModal(book) {
       followSeriesChk.checked = false;
     }
   }
+  onBookModalSeriesToggle();
 
   // Show Adult User ABS Override toggle when user is signed in with a linked ABS account or in All Books view (ABS items only)
   const useAbsWrap = document.getElementById("bookModalUseMyAbsWrap");
@@ -186,6 +189,21 @@ function updateBookModalTargetPlayerButton() {
   const dev = (currentDevices || []).find(d => (d.deviceId || d.id) === activeDeviceId);
   const playerName = dev && (dev.name || dev.deviceId || dev.id) ? (dev.name || dev.deviceId || dev.id) : "";
   playBtn.innerText = playerName ? `▶️ Play Now on ${playerName}` : "▶️ Play Now on Selected Player";
+}
+
+function onBookModalSeriesToggle() {
+  const startWrap = document.getElementById("bookModalSeriesStartWrap");
+  const startSel = document.getElementById("bookModalSeriesStart");
+  if (!startWrap) return;
+  const isYoto = Boolean(activeBook && activeBook.type && activeBook.type !== "abs");
+  const modeVal = document.getElementById("bookModalModeSelect")?.value || "default";
+  const followChk = Boolean(document.getElementById("bookModalFollowSeries")?.checked);
+  const showStart = !isYoto && Boolean(activeBook && activeBook.series) && (followChk || modeVal === "offline_series");
+  startWrap.style.display = showStart ? "block" : "none";
+  if (startSel && startSel.options && startSel.options[0]) {
+    const titleLabel = activeBook && activeBook.title ? `"${activeBook.title}"` : "this book";
+    startSel.options[0].textContent = `📖 Start from this book (${titleLabel})`;
+  }
 }
 
 function onBookModalUseMyAbsToggle() {
@@ -319,6 +337,7 @@ async function executeBookPlay() {
     const followSeries = Boolean(document.getElementById("bookModalFollowSeries")?.checked) || modeVal === "offline_series";
     const groupKind = followSeries ? "series" : "book";
     const seriesName = activeBook.series || "";
+    const seriesStart = followSeries ? (document.getElementById("bookModalSeriesStart")?.value || "selected") : "selected";
     const assignPayload = useUserAbs
       ? {
           use_user_abs: true,
@@ -326,6 +345,7 @@ async function executeBookPlay() {
           mode: modeVal.startsWith("offline") ? modeVal : "streaming",
           group_kind: groupKind,
           series_name: seriesName,
+          series_start: seriesStart,
           title: activeBook.title,
           author: activeBook.author
         }
@@ -335,6 +355,7 @@ async function executeBookPlay() {
           mode: modeVal,
           group_kind: groupKind,
           series_name: seriesName,
+          series_start: seriesStart,
           title: activeBook.title,
           author: activeBook.author
         };
@@ -354,14 +375,20 @@ async function executeBookPlay() {
     closeBookModal();
 
     // 2. Begin playback on active Target Player
+    const switchedBook = Boolean(slot.abs_item_id && slot.abs_item_id !== activeBook.id);
+    const playTitle = switchedBook ? (slot.title || activeBook.title) : activeBook.title;
+    const playThumb = switchedBook
+      ? `/api/cover/${encodeURIComponent(slot.abs_item_id)}`
+      : (activeBook.thumb || `/api/cover/${encodeURIComponent(activeBook.id)}`);
+    const playChapter = switchedBook ? 1 : chapVal;
     if (activeDeviceId && slot.yoto_card_id) {
       if (typeof setPendingPlayConfirmation === "function") {
         setPendingPlayConfirmation({
           deviceId: activeDeviceId,
           cardId: slot.yoto_card_id,
-          title: activeBook.title,
+          title: playTitle,
           author: activeBook.author,
-          thumb: activeBook.thumb || `/api/cover/${encodeURIComponent(activeBook.id)}`,
+          thumb: playThumb,
         });
       }
       await fetch("/api/player/play", {
@@ -370,7 +397,7 @@ async function executeBookPlay() {
         body: JSON.stringify({
           device_id: activeDeviceId,
           card_id: slot.yoto_card_id,
-          chapter: chapVal,
+          chapter: playChapter,
           use_user_abs: useUserAbs
         })
       });
@@ -441,6 +468,7 @@ async function executeAssignToSlot() {
   const isYoto = Boolean(activeBook.type && activeBook.type !== "abs");
   const modeVal = document.getElementById("bookModalModeSelect").value;
   const followSeries = Boolean(document.getElementById("bookModalFollowSeries")?.checked) || modeVal === "offline_series";
+  const seriesStart = followSeries ? (document.getElementById("bookModalSeriesStart")?.value || "selected") : "selected";
   let payload = isYoto
     ? {
         yoto_card_id: activeBook.id,
@@ -452,6 +480,7 @@ async function executeAssignToSlot() {
         mode: modeVal,
         group_kind: followSeries ? "series" : "book",
         series_name: activeBook.series || "",
+        series_start: seriesStart,
         title: activeBook.title,
         author: activeBook.author
       };

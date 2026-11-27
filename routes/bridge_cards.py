@@ -11,7 +11,7 @@ from core.bridge.chapter_finder import apply_proposed_chapters_to_item, lookup_a
 from core.bridge.icons import upload_abs_cover_to_yoto
 from core.bridge.manager import get_bridge_manager
 from core.bridge.offline import get_offline_manager, normalize_offline_submode, prune_evicted_profile_playlists
-from core.bridge.series import patch_effective_item_progress
+from core.bridge.series import patch_effective_item_progress, resolve_series_start_book
 from core.bridge.transfer import analyse_myo_card_for_abs_transfer
 
 logger = logging.getLogger("storydeck.routes.bridge_cards")
@@ -281,6 +281,10 @@ def assign_card_content():
     mode_override = str(data.get("mode") or "default").strip().lower()
     group_kind = "series" if str(data.get("group_kind") or "").strip().lower() == "series" or mode_override in ("offline_series", "series") else "book"
     series_name = str(data.get("series_name") or "").strip()
+    series_start = str(data.get("series_start") or "selected").strip().lower()
+    if series_start not in ("selected", "active", "beginning"):
+        series_start = "selected"
+    req_title = data.get("title", "")
     hours = float(data.get("hours") or 5.0)
     base_url = request.host_url.rstrip("/")
 
@@ -288,6 +292,7 @@ def assign_card_content():
     user_token = None
 
     # Validate that the selected ABS item actually contains playable audio files (not an ebook-only EPUB/PDF)
+    abs_check = None
     if abs_item_id and clients.abs_client:
         abs_check = clients.abs_client.get_item(abs_item_id)
         if abs_check:
@@ -304,6 +309,32 @@ def assign_card_content():
                     "error": f"'{chk_media.get('metadata', {}).get('title') or 'This item'}' is an {eb_fmt.upper()} eBook in Audiobookshelf with no audio files to play."
                 }), 400
 
+    # Resolve starting book when assigning a series ('selected' clicked book, 'active' unfinished, or 'beginning' Book 1)
+    if group_kind == "series" and abs_item_id:
+        if not series_name:
+            db_item = database.get_media_item_by_id(abs_item_id) or {}
+            series_name = str(db_item.get("series") or "").strip()
+            if not series_name and abs_check:
+                raw_ser = ((abs_check.get("media") or {}).get("metadata") or {}).get("seriesName") or ""
+                series_name = str(raw_ser).split(",")[0].split("#")[0].strip()
+        eff_token = None
+        if use_user_abs:
+            u = get_current_user() or {}
+            if not u.get("is_lan_guest") and u.get("id"):
+                eff_token = database.get_user_abs_credentials(u["id"]).get("abs_api_key") or None
+        elif profile_id and clients.abs_client:
+            eff_token = clients.abs_client.resolve_token_for_profile(profile_id)
+        if series_name:
+            resolved_id, resolved_title = resolve_series_start_book(
+                series_name,
+                abs_item_id,
+                series_start=series_start,
+                abs_token=eff_token,
+            )
+            if resolved_id and resolved_id != abs_item_id:
+                abs_item_id = resolved_id
+                req_title = resolved_title
+
     if use_user_abs:
         if not abs_item_id:
             return jsonify({"error": "abs_item_id is required"}), 400
@@ -314,7 +345,7 @@ def assign_card_content():
             slot = mgr.assign_abs_book_to_slot(
                 slot_id="guest_stream",
                 abs_item_id=abs_item_id,
-                title=data.get("title", ""),
+                title=req_title,
                 author=data.get("author", ""),
                 series_name=series_name,
                 group_kind=group_kind,
@@ -332,7 +363,7 @@ def assign_card_content():
                 user_id=user["id"],
                 username=user.get("display_name") or user.get("username") or user["id"],
                 abs_item_id=abs_item_id,
-                title=data.get("title", ""),
+                title=req_title,
                 author=data.get("author", ""),
                 mode_override=mode_override,
                 base_url=base_url,
@@ -348,7 +379,7 @@ def assign_card_content():
             slot = mgr.assign_abs_book_to_slot(
                 slot_id="guest_stream",
                 abs_item_id=abs_item_id,
-                title=data.get("title", ""),
+                title=req_title,
                 author=data.get("author", ""),
                 series_name=series_name,
                 group_kind=group_kind,
@@ -375,7 +406,7 @@ def assign_card_content():
             slot_id=slot_id,
             abs_item_id=abs_item_id,
             yoto_card_id=yoto_card_id,
-            title=data.get("title", ""),
+            title=req_title,
             author=data.get("author", ""),
             mode_override=mode_override,
             base_url=base_url,
@@ -419,7 +450,14 @@ def assign_card_content():
                         conn.commit()
             except Exception as e:
                 logger.warning("Failed to create initial Yoto playlist for offline slot %s: %s", slot_key, e)
-        job = get_offline_manager().queue_transcode(slot_key, base_url=base_url, offline_mode=submode, hours=hours)
+        anchor_cur = bool(group_kind == "series" and series_start in ("selected", "beginning"))
+        job = get_offline_manager().queue_transcode(
+            slot_key,
+            base_url=base_url,
+            offline_mode=submode,
+            hours=hours,
+            anchor_current_book=anchor_cur,
+        )
         slot["transcode"] = job
     elif slot_mode == "streaming" and clients.yoto_client and abs_item_id:
         try:

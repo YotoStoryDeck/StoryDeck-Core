@@ -262,15 +262,59 @@ def patch_effective_item_progress(
     return False
 
 
+def resolve_series_start_book(
+    series_name: str,
+    selected_item_id: str,
+    series_start: str = "selected",
+    abs_token: Optional[str] = None,
+    slot_id: str = "",
+    own_place: bool = False,
+) -> Tuple[str, str]:
+    """
+    Resolves which book in a series a card should start on based on `series_start`:
+    - 'selected' (default): start from the clicked/selected book (`selected_item_id`).
+    - 'beginning': start from Book #1 of the series.
+    - 'active': resume from the currently active unfinished book across ABS / local progress.
+    Returns `(resolved_item_id, resolved_title)`.
+    """
+    mode = str(series_start or "selected").strip().lower()
+    if mode not in ("selected", "active", "beginning"):
+        mode = "selected"
+
+    books = get_series_books(series_name)
+    if not books:
+        return selected_item_id, ""
+
+    if mode == "beginning":
+        return books[0].item_id, books[0].title
+
+    if mode == "active":
+        prog_map: Dict[str, Dict[str, Any]] = {}
+        if own_place and slot_id:
+            prog_map = get_local_progress_map(slot_id)
+        elif clients.abs_client:
+            for b in books:
+                p = clients.abs_client.get_media_progress(b.item_id, token=abs_token)
+                if p:
+                    prog_map[b.item_id] = p
+        idx = current_series_book_index(books, prog_map)
+        return books[idx].item_id, books[idx].title
+
+    matched = next((b for b in books if b.item_id == selected_item_id), None)
+    return (matched.item_id, matched.title) if matched else (selected_item_id, "")
+
+
 def resolve_slot_series_chain(
     slot: Dict[str, Any],
     abs_token: Optional[str] = None,
+    anchor_current_book: bool = False,
 ) -> Tuple[List[SeriesBook], int, List[SeriesBook]]:
     """
     For a slot with `series_name` / `series_id`, returns `(all_series_books, active_index, following_books)`:
-    - If `group_kind == 'series'` (or the slot has a series), finds all books in the series.
-    - When `group_kind == 'series'`, automatically advances `slot['abs_item_id']` to the current unfinished
-      book in the series based on ABS (or `own_place` local) progress.
+    - If `anchor_current_book=True` and `slot['abs_item_id']` is in `books`, honors that book as the starting
+      anchor instead of auto-advancing via `current_series_book_index` (used for initial user-chosen builds).
+    - Otherwise, when `group_kind == 'series'` or `offline_mode == 'series'`, automatically advances
+      `slot['abs_item_id']` to the current unfinished book in the series based on ABS (or `own_place`) progress.
     - Even on a regular single-book slot that belongs to a series, returns the `following_books` after
       `slot['abs_item_id']` so 5-hour rolling offline windows (`mode='next'`) and series cards can roll
       into the next book(s).
@@ -284,6 +328,10 @@ def resolve_slot_series_chain(
         return [], 0, []
 
     ids = [b.item_id for b in books]
+    if anchor_current_book and cur_item_id in ids:
+        idx = ids.index(cur_item_id)
+        return books, idx, books[idx + 1:]
+
     if str(slot.get("group_kind") or "") == "series" or str(slot.get("offline_mode") or "") == "series":
         prog_map: Dict[str, Dict[str, Any]] = {}
         if slot.get("own_place"):

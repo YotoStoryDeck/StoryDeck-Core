@@ -345,7 +345,7 @@
       <!-- Delivery Mode Selector Dropdown -->
       <div class="form-group" id="bookModalDeliveryGroup" style="margin-bottom: 12px;">
         <label for="bookModalModeSelect" style="font-size: 12px; font-weight: 600;">Delivery Mode</label>
-        <select id="bookModalModeSelect" class="form-control">
+        <select id="bookModalModeSelect" class="form-control" onchange="onBookModalSeriesToggle()">
           <option value="default">⚙️ Profile Default (<span id="optProfileDefaultMode">Streaming</span>)</option>
           <option value="streaming">⚡ Streaming (Instant Playback)</option>
           <option value="offline_next">⏱️ Offline — Next 5 Hours (Rolling Window from Resume Point)</option>
@@ -361,9 +361,17 @@
       <div id="bookModalFollowSeriesWrap"
         style="display: none; margin-bottom: 12px; padding: 8px 10px; border-radius: 8px; background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.28);">
         <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 12px; margin: 0;">
-          <input type="checkbox" id="bookModalFollowSeries" style="margin-top: 2px;">
+          <input type="checkbox" id="bookModalFollowSeries" style="margin-top: 2px;" onchange="onBookModalSeriesToggle()">
           <span id="bookModalFollowSeriesLabel">📚 Follow entire series in order on this card (auto-advances to next book)</span>
         </label>
+        <div id="bookModalSeriesStartWrap" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(16,185,129,0.22);">
+          <label for="bookModalSeriesStart" style="display: block; font-size: 11px; font-weight: 600; margin-bottom: 4px;">Series Start Point</label>
+          <select id="bookModalSeriesStart" class="form-control" style="font-size: 12px;">
+            <option value="selected">📖 Start from this book</option>
+            <option value="active">🔖 Resume active unfinished book in series</option>
+            <option value="beginning">⏮️ Start from Book 1 (beginning of series)</option>
+          </select>
+        </div>
       </div>
 
       <div id="bookModalUseMyAbsWrap"

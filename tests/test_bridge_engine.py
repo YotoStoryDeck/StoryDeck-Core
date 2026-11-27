@@ -747,6 +747,144 @@ class TestBridgeEngine(unittest.TestCase):
             else:
                 database.set_system_setting("offline_series_packing", old_packing)
 
+    def test_series_start_point_options_selected_active_beginning(self):
+        """Verifies POST /api/cards/assign supports series_start = 'selected', 'active', and 'beginning' across streaming and offline."""
+        from core.bridge.offline import get_offline_manager
+
+        series_items = []
+        abs_items_by_id = {}
+        for idx in range(1, 5):
+            bid = f"ser_start_b{idx}"
+            title = f"Start Saga Book {idx}"
+            chapters = [
+                {"start": i * 600.0, "end": (i + 1) * 600.0, "title": f"Ch {i + 1}"}
+                for i in range(10)
+            ]
+            series_items.append({
+                "id": bid,
+                "type": "abs",
+                "title": title,
+                "author": "Author",
+                "raw_metadata": {
+                    "series": "Start Saga",
+                    "series_order": str(idx),
+                    "series_list": [{"name": "Start Saga", "order": str(idx)}],
+                    "duration": 10 * 600.0,
+                },
+            })
+            abs_items_by_id[bid] = {
+                "id": bid,
+                "media": {
+                    "duration": 10 * 600.0,
+                    "metadata": {"title": title, "seriesName": f"Start Saga #{idx}"},
+                    "chapters": chapters,
+                },
+            }
+
+        database.upsert_media_items(series_items)
+        mgr = get_bridge_manager()
+        try:
+            # Book 1 finished, Book 2 in progress (more recently touched), Books 3 & 4 unplayed
+            def _prog(item_id, token=None, **kwargs):
+                if item_id == "ser_start_b1":
+                    return {"currentTime": 6000.0, "isFinished": True, "lastUpdate": 1000}
+                if item_id == "ser_start_b2":
+                    return {"currentTime": 1800.0, "isFinished": False, "lastUpdate": 2000}
+                return {}
+
+            # Ensure fleet slot exists
+            mgr.assign_abs_book_to_slot(slot_id="fleet_ser_start", abs_item_id="ser_start_b1", title="Init", mode="streaming")
+
+            with patch.object(clients.abs_client, "get_item", side_effect=lambda item_id, token=None: abs_items_by_id.get(item_id)), \
+                 patch.object(clients.abs_client, "get_media_progress", side_effect=_prog), \
+                 patch.object(get_offline_manager(), "queue_transcode", return_value={"status": "queued"}) as mock_queue:
+
+                # 1. series_start="selected" from Book 3 (streaming): starts on Book 3 and chains Book 4
+                r_sel = self.app.post("/api/cards/assign", json={
+                    "slot_id": "fleet_ser_start",
+                    "abs_item_id": "ser_start_b3",
+                    "mode": "streaming",
+                    "group_kind": "series",
+                    "series_name": "Start Saga",
+                    "series_start": "selected",
+                    "title": "Start Saga Book 3",
+                })
+                self.assertEqual(r_sel.status_code, 200)
+                d_sel = r_sel.get_json()
+                self.assertEqual(d_sel["abs_item_id"], "ser_start_b3")
+                self.assertEqual(d_sel["tracks"][0]["abs_item_id"], "ser_start_b3")
+
+                # 1b. series_start="selected" in offline_series passes anchor_current_book=True and keeps Book 3 first
+                r_sel_off = self.app.post("/api/cards/assign", json={
+                    "slot_id": "fleet_ser_start",
+                    "abs_item_id": "ser_start_b3",
+                    "mode": "offline_series",
+                    "group_kind": "series",
+                    "series_name": "Start Saga",
+                    "series_start": "selected",
+                    "title": "Start Saga Book 3",
+                })
+                self.assertEqual(r_sel_off.status_code, 200)
+                self.assertTrue(mock_queue.call_args.kwargs.get("anchor_current_book"))
+                planned_sel, meta_sel = get_offline_manager()._plan_offline_tracks(
+                    r_sel_off.get_json(),
+                    submode="series",
+                    hours=5.0,
+                    speed=1.0,
+                    abs_token=None,
+                    base_url="http://localhost:5055",
+                    anchor_current_book=True,
+                )
+                self.assertEqual(meta_sel["books"], ["ser_start_b3", "ser_start_b4"])
+                self.assertEqual(planned_sel[0]["abs_item_id"], "ser_start_b3")
+
+                # 2. series_start="beginning" from Book 3: starts at Book 1 even though Book 1 was marked finished
+                r_beg = self.app.post("/api/cards/assign", json={
+                    "slot_id": "fleet_ser_start",
+                    "abs_item_id": "ser_start_b3",
+                    "mode": "offline_series",
+                    "group_kind": "series",
+                    "series_name": "Start Saga",
+                    "series_start": "beginning",
+                    "title": "Start Saga Book 3",
+                })
+                self.assertEqual(r_beg.status_code, 200)
+                d_beg = r_beg.get_json()
+                self.assertEqual(d_beg["abs_item_id"], "ser_start_b1")
+                self.assertEqual(d_beg["title"], "Start Saga Book 1")
+                self.assertTrue(mock_queue.call_args.kwargs.get("anchor_current_book"))
+                planned_beg, meta_beg = get_offline_manager()._plan_offline_tracks(
+                    d_beg,
+                    submode="series",
+                    hours=5.0,
+                    speed=1.0,
+                    abs_token=None,
+                    base_url="http://localhost:5055",
+                    anchor_current_book=True,
+                )
+                self.assertEqual(meta_beg["books"], ["ser_start_b1", "ser_start_b2", "ser_start_b3", "ser_start_b4"])
+                self.assertEqual(planned_beg[0]["abs_item_id"], "ser_start_b1")
+
+                # 3. series_start="active" from Book 3: resolves to Book 2 (active unfinished book)
+                r_act = self.app.post("/api/cards/assign", json={
+                    "slot_id": "fleet_ser_start",
+                    "abs_item_id": "ser_start_b3",
+                    "mode": "offline_series",
+                    "group_kind": "series",
+                    "series_name": "Start Saga",
+                    "series_start": "active",
+                    "title": "Start Saga Book 3",
+                })
+                self.assertEqual(r_act.status_code, 200)
+                d_act = r_act.get_json()
+                self.assertEqual(d_act["abs_item_id"], "ser_start_b2")
+                self.assertEqual(d_act["title"], "Start Saga Book 2")
+                self.assertFalse(mock_queue.call_args.kwargs.get("anchor_current_book"))
+        finally:
+            with database.get_db_connection() as conn:
+                conn.execute("DELETE FROM media_items WHERE id LIKE 'ser_start_b%';")
+                conn.commit()
+
 
 if __name__ == "__main__":
     unittest.main()
