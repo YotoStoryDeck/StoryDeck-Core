@@ -361,6 +361,18 @@ def get_device_config():
             "hide_physical": bool(pdata.get("hide_physical", False))
         })
     settings = database.get_system_settings()
+    creds = database.get_api_credentials()
+    abs_configured = bool(
+        str(creds.get("abs_base_url") or "").strip()
+        and (
+            str(creds.get("abs_api_key") or "").strip()
+            or any(str(p.get("abs_api_key") or "").strip() for p in all_profs.values())
+        )
+    )
+    yoto_configured = bool(
+        str(creds.get("yoto_client_id") or "").strip()
+        and str(creds.get("yoto_refresh_token") or "").strip()
+    )
     exclude_single = bool(settings.get("exclude_single_card_series", True))
     parent_pin = device.get("parent_pin", "") if device else ""
     lock_player = bool(device.get("lock_player", False)) if device else False
@@ -383,6 +395,8 @@ def get_device_config():
         "settings": dev_settings,
         "allow_profile_switch": can_switch,
         "exclude_single_card_series": exclude_single,
+        "abs_configured": abs_configured,
+        "yoto_configured": yoto_configured,
         "ota": {
             "ota_status": (device.get("ota_status") or "idle") if device else "idle",
             "ota_progress": int(device.get("ota_progress") or 0) if device else 0,

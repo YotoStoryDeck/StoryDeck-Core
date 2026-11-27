@@ -97,7 +97,8 @@ export const CatalogScreen = {
   },
   getFilteredCatalog() {
     const q = (state.searchQuery || '').trim().toLowerCase();
-    const src = state.sourceFilter || 'all';
+    const hasAbs = Boolean(state.deviceConfig?.abs_configured);
+    const src = (!hasAbs && state.sourceFilter === 'abs') ? 'all' : (state.sourceFilter || 'all');
     return (state.catalog || []).filter(c => {
       const itemSrc = (c.source === 'abs' || c.type === 'abs') ? 'abs' : 'yoto';
       if (src !== 'all' && itemSrc !== src) return false;
@@ -115,8 +116,16 @@ export const CatalogScreen = {
     if ((state.activeTab !== 'all' && state.activeTab !== 'series') || !(state.catalog || []).length) {
       return '';
     }
-    const src = state.sourceFilter || 'all';
+    const hasAbs = Boolean(state.deviceConfig?.abs_configured);
+    const src = (!hasAbs && state.sourceFilter === 'abs') ? 'all' : (state.sourceFilter || 'all');
     const q = state.searchQuery || '';
+    const filterChipsHtml = hasAbs ? `
+        <div class="catalog-filter-chips">
+          <button type="button" class="src-chip ${src === 'all' ? 'active' : ''}" data-act="set-source-filter" data-src="all">All</button>
+          <button type="button" class="src-chip ${src === 'abs' ? 'active' : ''}" data-act="set-source-filter" data-src="abs">ABS</button>
+          <button type="button" class="src-chip ${src === 'yoto' ? 'active' : ''}" data-act="set-source-filter" data-src="yoto">Yoto</button>
+        </div>
+    ` : '';
     return `
       <div class="catalog-toolbar">
         <div class="catalog-search-wrap">
@@ -124,11 +133,7 @@ export const CatalogScreen = {
           <input id="kioskCatalogSearch" class="catalog-search-input" type="search" placeholder="Search books, authors, series..." value="${Utils.esc(q)}" autocomplete="off" spellcheck="false">
           <button type="button" class="catalog-search-clear" data-act="clear-search" title="Clear search" style="${q ? '' : 'display:none;'}">&#10005;</button>
         </div>
-        <div class="catalog-filter-chips">
-          <button type="button" class="src-chip ${src === 'all' ? 'active' : ''}" data-act="set-source-filter" data-src="all">All</button>
-          <button type="button" class="src-chip ${src === 'abs' ? 'active' : ''}" data-act="set-source-filter" data-src="abs">ABS</button>
-          <button type="button" class="src-chip ${src === 'yoto' ? 'active' : ''}" data-act="set-source-filter" data-src="yoto">Yoto</button>
-        </div>
+        ${filterChipsHtml}
         <span class="catalog-count">${matchCount} ${matchCount === 1 ? 'book' : 'books'}</span>
       </div>
     `;

@@ -23,7 +23,7 @@ export const state = {
   lockedPlayerId: null,
   profiles: [],
   catalog: [],
-  deviceConfig: { allow_profile_switch: true, assigned_profile: null },
+  deviceConfig: { allow_profile_switch: true, assigned_profile: null, abs_configured: false, yoto_configured: false },
   deviceToken: null,
   refreshToken: null,
   activeProfile: null,
@@ -157,6 +157,10 @@ export const state = {
     this.searchQuery = String(q || '');
   },
   setSourceFilter(src) {
+    if (src === 'abs' && !this.deviceConfig?.abs_configured) {
+      this.sourceFilter = 'all';
+      return;
+    }
     this.sourceFilter = (src === 'abs' || src === 'yoto') ? src : 'all';
   },
   setCard(card) {

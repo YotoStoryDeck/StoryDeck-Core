@@ -305,6 +305,39 @@ class TestPortalKioskAndPlayer(IsolatedTestCase):
         parser.feed(self.app.get("/admin").get_data(as_text=True))
         self.assertEqual(parser.orphan_passwords, [])
 
+    def test_07_device_config_abs_configured_flag_and_kiosk_filter_gating(self):
+        """Verifies /api/device/config reports abs_configured accurately and Kiosk JS gates ABS filter buttons on it."""
+        orig_creds = database.get_api_credentials()
+        try:
+            database.update_api_credentials({
+                "abs_base_url": "",
+                "abs_api_key": "",
+                "yoto_client_id": "yoto_only_cid",
+                "yoto_refresh_token": "yoto_only_rt",
+            })
+            cfg_no_abs = self.app.get("/api/device/config").get_json()
+            self.assertFalse(cfg_no_abs["abs_configured"])
+            self.assertTrue(cfg_no_abs["yoto_configured"])
+
+            database.update_api_credentials({
+                "abs_base_url": "http://abs.test.invalid:13378",
+                "abs_api_key": "abs_key_present",
+                "yoto_client_id": "yoto_only_cid",
+                "yoto_refresh_token": "yoto_only_rt",
+            })
+            cfg_with_abs = self.app.get("/api/device/config").get_json()
+            self.assertTrue(cfg_with_abs["abs_configured"])
+            self.assertTrue(cfg_with_abs["yoto_configured"])
+        finally:
+            database.update_api_credentials(orig_creds)
+
+        res_js = self.app.get("/kiosk/js/screens/catalog.js")
+        self.assertEqual(res_js.status_code, 200)
+        cat_js = res_js.get_data(as_text=True)
+        res_js.close()
+        self.assertIn("abs_configured", cat_js)
+        self.assertIn("hasAbs ?", cat_js)
+
 
 if __name__ == "__main__":
     unittest.main()

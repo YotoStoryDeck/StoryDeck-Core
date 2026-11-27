@@ -112,6 +112,9 @@ export const BrokerApi = {
     if (!res.ok) throw new Error(`Config fetch failed: ${res.status}`);
     const conf = await res.json();
     state.deviceConfig = conf;
+    if (!conf.abs_configured && state.sourceFilter === 'abs') {
+      state.sourceFilter = 'all';
+    }
     if (conf.is_approved !== undefined) {
       state.isApproved = Boolean(conf.is_approved);
     }
@@ -237,9 +240,12 @@ export const BrokerApi = {
       absItems = payload.abs || [];
       yotoItems = payload.yoto || [];
     } else {
-      const absPromise = this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/abs?${qs}`)
-        .then(r => r.ok ? r.json() : [])
-        .catch(() => []);
+      const skipAbs = state.deviceConfig && state.deviceConfig.abs_configured === false;
+      const absPromise = skipAbs
+        ? Promise.resolve([])
+        : this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/abs?${qs}`)
+          .then(r => r.ok ? r.json() : [])
+          .catch(() => []);
       const yotoPromise = this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/yoto?${qs}`)
         .then(r => r.ok ? r.json() : [])
         .catch(() => []);
