@@ -108,24 +108,53 @@ body.kiosk-mode .frame {
 body.kiosk-mode .grid,
 body.kiosk-custom-res .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(clamp(128px, 14vw, 175px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-auto-rows: max-content;
   gap: 16px;
   padding: 16px;
-  align-content: flex-start;
+  align-items: start;
+  align-content: start;
+  justify-content: stretch;
+}
+
+@media (max-width: 600px) {
+  body.kiosk-mode .grid,
+  body.kiosk-custom-res .grid {
+    grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));
+    gap: 12px;
+    padding: 12px;
+  }
+}
+
+@media (min-width: 1024px) {
+  body.kiosk-mode .grid,
+  body.kiosk-custom-res .grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 18px;
+    padding: 18px 20px;
+  }
 }
 
 body.kiosk-mode .grid .tile,
 body.kiosk-custom-res .grid .tile {
   width: 100%;
   height: auto;
-  aspect-ratio: 122 / 193;
+}
+
+body.kiosk-mode .grid .tile::before,
+body.kiosk-custom-res .grid .tile::before,
+body.kiosk-mode .series-row .tile::before,
+body.kiosk-custom-res .series-row .tile::before {
+  content: "";
+  display: block;
+  padding-top: 158.2%;
 }
 
 body.kiosk-mode .series-row .tile,
 body.kiosk-custom-res .series-row .tile {
-  width: clamp(122px, 13vw, 160px);
+  width: 136px;
   height: auto;
-  aspect-ratio: 122 / 193;
+  flex: 0 0 auto;
 }
 
 body.kiosk-mode .nowbar {

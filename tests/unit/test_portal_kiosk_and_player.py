@@ -79,6 +79,17 @@ class TestPortalKioskAndPlayer(IsolatedTestCase):
         self.assertEqual(res_manifest.status_code, 200)
         self.assertEqual(res_manifest.get_json().get("orientation"), "any")
 
+        res_main_css = self.app.get("/kiosk/css/main.css")
+        self.assertEqual(res_main_css.status_code, 200)
+        main_css = res_main_css.get_data(as_text=True)
+        self.assertNotIn("minmax(clamp(", main_css)
+        self.assertIn("padding-top: 158.2%", main_css)
+
+        res_cat_css = self.app.get("/kiosk/css/catalog.css")
+        self.assertEqual(res_cat_css.status_code, 200)
+        cat_css = res_cat_css.get_data(as_text=True)
+        self.assertIn("position: absolute;", cat_css)
+
     def test_03_player_devices_transport_and_sleep_timer_service(self):
         """Verifies /api/player/devices, /transport, /control, and real sleep_timer service logic."""
         mock_map = {"yoto_123": {"id": "yoto_123", "deviceId": "yoto_123", "name": "Bedroom Yoto", "online": True, "status": "idle"}}
