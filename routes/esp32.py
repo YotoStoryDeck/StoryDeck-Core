@@ -222,6 +222,16 @@ def get_device_media_tracks(media_id: str):
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _request_client_ip() -> str:
+    """Returns client IP considering reverse-proxy forwarding headers."""
+    return (
+        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or request.headers.get("X-Real-IP", "").strip()
+        or request.remote_addr
+        or ""
+    )
+
+
 @esp32_bp.route("/api/devices/register", methods=["POST"])
 @esp32_bp.route("/api/device/register", methods=["POST"])
 def register_device():
@@ -232,13 +242,27 @@ def register_device():
     data = request.get_json(silent=True) or {}
     mac = data.get("mac_address") or data.get("mac") or data.get("device_id")
     friendly_name = data.get("friendly_name", "ESP32 Controller")
-    ip_addr = data.get("ip_address") or request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.headers.get("X-Real-IP") or request.remote_addr or ""
+    ip_addr = data.get("ip_address") or _request_client_ip()
     firmware_ver = data.get("firmware_version", "1.0.0")
     boot_state = (data.get("boot_state") or "").strip().lower()
+    assigned_profile = (data.get("assigned_profile") or data.get("assigned_profile_id") or "").strip()
+    lock_player = data.get("lock_player")
+    locked_player_id = (data.get("locked_player_id") or "").strip()
+    parent_pin = (data.get("parent_pin") or "").strip()
     if not mac:
         return jsonify({"ok": False, "error": "Missing mac_address"}), 400
     mac_clean = mac.lower().strip()
-    database.register_esp32_device(mac_clean, friendly_name, ip_addr, firmware_ver, boot_state=boot_state)
+    database.register_esp32_device(
+        mac_clean,
+        friendly_name,
+        ip_addr,
+        firmware_ver,
+        boot_state=boot_state,
+        assigned_profile_id=assigned_profile,
+        lock_player=lock_player,
+        locked_player_id=locked_player_id,
+        parent_pin=parent_pin,
+    )
     dev_record = database.get_esp32_device(mac_clean)
     is_approved = bool(dev_record.get("is_approved")) if dev_record else False
     if not is_approved:
@@ -294,6 +318,7 @@ def refresh_device_token():
     curr_ver = int(dev.get("token_version") or 1)
     if int(claims.get("ver", -1)) != curr_ver:
         return jsonify({"error": "token_revoked", "message": "Device token version has been revoked."}), 403
+    database.touch_esp32_device_last_seen(mac, _request_client_ip(), min_interval_sec=0.0)
     assigned_prof = dev.get("assigned_profile_id") or ""
     new_access_token = create_device_jwt(mac, assigned_prof, jwt_secret, curr_ver, "access", expires_in=86400)
     return jsonify({
@@ -308,6 +333,8 @@ def get_device_config():
     """Returns device boot configuration, profiles, players, and OTA state."""
     device_id = request.args.get("device_id") or request.args.get("mac")
     device = database.get_esp32_device(device_id) if device_id else None
+    if device:
+        database.touch_esp32_device_last_seen(device["mac_address"], _request_client_ip(), min_interval_sec=0.0)
     is_approved = bool(device["is_approved"]) if device else True
     assigned_prof = device["assigned_profile_id"] if (device and is_approved) else None
     all_profs = database.get_all_profiles()
@@ -438,7 +465,10 @@ def update_device_settings():
     if "locked_player_id" in data:
         updates["locked_player_id"] = str(data["locked_player_id"] or "").strip()
     if "assigned_profile" in data or "assigned_profile_id" in data:
-        updates["assigned_profile_id"] = str(data.get("assigned_profile") or data.get("assigned_profile_id") or "").strip()
+        prof_val = str(data.get("assigned_profile") or data.get("assigned_profile_id") or "").strip() or None
+        if prof_val and not database.get_profile_by_id(prof_val):
+            prof_val = None
+        updates["assigned_profile_id"] = prof_val
     if "friendly_name" in data and data["friendly_name"]:
         updates["friendly_name"] = str(data["friendly_name"]).strip()
 

@@ -654,6 +654,7 @@ def get_current_device() -> Optional[Dict[str, Any]]:
         if not verified or verified.get("type") != "access":
             return None
 
+        database.touch_esp32_device_last_seen(mac, min_interval_sec=30.0)
         return {
             "mac_address": mac,
             "device": device,

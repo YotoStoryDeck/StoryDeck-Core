@@ -50,9 +50,12 @@ function renderDevicesTable() {
       : `<span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px;">📟 ESP32 Touch</span>`;
 
     // 2. Stacked Network & MAC
+    const initialStatus = d.is_online
+      ? `<span style="color: #10b981; font-weight: bold;">● Online</span>`
+      : `<span style="color: var(--text-muted); font-weight: 500;">● Offline</span>`;
     const ipDisplay = d.ip_address
-      ? `<span id="ping-${safeMac}" data-ip="${escapeHtml(d.ip_address)}" style="font-weight: 500;">${escapeHtml(d.ip_address)}</span>`
-      : `<span id="ping-${safeMac}" data-ip="" style="color: var(--text-muted);">No IP</span>`;
+      ? `<span id="ping-${safeMac}" data-ip="${escapeHtml(d.ip_address)}" style="font-weight: 500;">${escapeHtml(d.ip_address)} ${initialStatus}</span>`
+      : `<span id="ping-${safeMac}" data-ip="" style="color: var(--text-muted);">No IP ${initialStatus}</span>`;
 
     // 3. Engine / Firmware Version & Live OTA Status Pill
     const rawFw = d.firmware_version ? d.firmware_version.trim() : "1.0.0";
@@ -335,7 +338,10 @@ async function pingSingleDevice(mac) {
         el.dataset.ip = data.ip || baseIp;
         el.innerHTML = `${escapeHtml(displayIp)} <span style="color: #10b981; font-weight: bold;">● Online</span>`;
       }
-      showToast(`Device ${mac} is ONLINE at ${displayIp}`, "success");
+      const msg = (data.source === "heartbeat")
+        ? `Device ${mac} is ONLINE via Core heartbeat (${data.last_seen_seconds_ago ?? 0}s ago)`
+        : `Device ${mac} is ONLINE at ${displayIp}`;
+      showToast(msg, "success");
     } else {
       showToast(`Device ${mac} is OFFLINE (${data.error || 'unreachable'})`, "warning");
       if (el) {

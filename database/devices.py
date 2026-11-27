@@ -2,10 +2,78 @@
 import json
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from .connection import get_db_connection, logger
+
+# Per-MAC monotonic timestamp throttle so frequent JWT polling doesn't write to SQLite on every request
+_LAST_SEEN_TOUCH_CACHE: Dict[str, float] = {}
+
+
+def compute_device_online_state(last_seen_str: Optional[str], threshold_sec: int = 180) -> Tuple[bool, Optional[int]]:
+    """Parses SQLite UTC CURRENT_TIMESTAMP or ISO-8601 UTC string and returns (is_online, seconds_ago)."""
+    raw = str(last_seen_str or "").strip()
+    if not raw:
+        return False, None
+    parsed: Optional[datetime] = None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            parsed = datetime.strptime(raw.rstrip("Z"), fmt).replace(tzinfo=timezone.utc)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return False, None
+    secs = max(0, int((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()))
+    return (secs <= threshold_sec), secs
+
+
+def touch_esp32_device_last_seen(mac_address: str, ip_address: str = "", min_interval_sec: float = 0.0) -> bool:
+    """Refreshes last_seen (and valid non-proxy LAN IP) with optional monotonic throttling."""
+    mac_clean = (mac_address or "").lower().strip()
+    if not mac_clean:
+        return False
+    now_mono = time.monotonic()
+    if min_interval_sec > 0:
+        last = _LAST_SEEN_TOUCH_CACHE.get(mac_clean, 0.0)
+        if (now_mono - last) < min_interval_sec:
+            return True
+    _LAST_SEEN_TOUCH_CACHE[mac_clean] = now_mono
+
+    ip_clean = (ip_address or "").strip()
+    update_ip = bool(
+        ip_clean
+        and not ip_clean.startswith("127.")
+        and not ip_clean.startswith("172.")
+        and ip_clean != "::1"
+    )
+    conn = get_db_connection()
+    try:
+        with conn:
+            if update_ip:
+                conn.execute(
+                    "UPDATE esp32_devices SET last_seen = CURRENT_TIMESTAMP, ip_address = ? WHERE mac_address = ?;",
+                    (ip_clean, mac_clean),
+                )
+            else:
+                conn.execute(
+                    "UPDATE esp32_devices SET last_seen = CURRENT_TIMESTAMP WHERE mac_address = ?;",
+                    (mac_clean,),
+                )
+        return True
+    except Exception as e:
+        logger.debug("Failed touching last_seen for %s: %s", mac_clean, e)
+        return False
+    finally:
+        conn.close()
+
 
 def register_esp32_device(
     mac_address: str,
@@ -13,6 +81,10 @@ def register_esp32_device(
     ip_address: str,
     firmware_version: str,
     boot_state: str = "",
+    assigned_profile_id: str = "",
+    lock_player: Optional[bool] = None,
+    locked_player_id: str = "",
+    parent_pin: str = "",
 ) -> Dict[str, Any]:
     """Registers an ESP32 device upon boot handshake (quarantined by default if new)."""
     mac_clean = mac_address.lower().strip()
@@ -59,14 +131,39 @@ def register_esp32_device(
                     "status": "updated"
                 }
             else:
+                init_prof = (assigned_profile_id or "").strip() or None
+                if init_prof:
+                    cur.execute("SELECT 1 FROM profiles WHERE id = ?;", (init_prof,))
+                    if not cur.fetchone():
+                        logger.warning(
+                            "Ignoring unknown initial assigned_profile '%s' during registration for %s",
+                            init_prof, mac_clean,
+                        )
+                        init_prof = None
+                init_locked_id = (locked_player_id or "").strip()
+                init_lock = 1 if (bool(lock_player) or bool(init_locked_id)) else 0
+                raw_pin = (parent_pin or "").strip()
+                init_pin = raw_pin if (len(raw_pin) == 4 and raw_pin.isdigit()) else ""
                 conn.execute("""
-                INSERT INTO esp32_devices (mac_address, friendly_name, ip_address, firmware_version, is_approved)
-                VALUES (?, ?, ?, ?, 0);
-                """, (mac_clean, friendly_name or f"ESP32 ({mac_clean[-5:]})", ip_address, firmware_version))
+                INSERT INTO esp32_devices (
+                    mac_address, friendly_name, ip_address, firmware_version, is_approved,
+                    assigned_profile_id, lock_player, locked_player_id, parent_pin
+                )
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?);
+                """, (
+                    mac_clean,
+                    friendly_name or f"ESP32 ({mac_clean[-5:]})",
+                    ip_address,
+                    firmware_version,
+                    init_prof,
+                    init_lock,
+                    init_locked_id,
+                    init_pin,
+                ))
                 return {
                     "mac_address": mac_clean,
                     "friendly_name": friendly_name or f"ESP32 ({mac_clean[-5:]})",
-                    "assigned_profile_id": None,
+                    "assigned_profile_id": init_prof,
                     "is_approved": False,
                     "status": "registered_quarantined"
                 }
@@ -84,12 +181,19 @@ def get_esp32_device(mac_address: str) -> Optional[Dict[str, Any]]:
     finally:
         conn.close()
 def list_esp32_devices() -> List[Dict[str, Any]]:
-    """Lists all registered devices for Admin Portal Hardware tab."""
+    """Lists all registered devices for Admin Portal Hardware tab with computed online state."""
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("SELECT * FROM esp32_devices ORDER BY last_seen DESC;")
-        return [dict(r) for r in cur.fetchall()]
+        devices: List[Dict[str, Any]] = []
+        for r in cur.fetchall():
+            d = dict(r)
+            is_online, secs = compute_device_online_state(d.get("last_seen"))
+            d["is_online"] = is_online
+            d["last_seen_seconds_ago"] = secs
+            devices.append(d)
+        return devices
     finally:
         conn.close()
 def update_esp32_device(mac_address: str, updates: Dict[str, Any]) -> bool:
@@ -134,6 +238,8 @@ def update_esp32_device(mac_address: str, updates: Dict[str, Any]) -> bool:
                 values.append(mac_clean)
                 query = f"UPDATE esp32_devices SET {', '.join(fields)}, last_seen = CURRENT_TIMESTAMP WHERE mac_address = ?;"
                 conn.execute(query, tuple(values))
+            else:
+                conn.execute("UPDATE esp32_devices SET last_seen = CURRENT_TIMESTAMP WHERE mac_address = ?;", (mac_clean,))
         return True
     finally:
         conn.close()

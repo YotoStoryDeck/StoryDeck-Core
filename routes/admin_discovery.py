@@ -57,22 +57,49 @@ def admin_prune_devices():
 @admin_discovery_bp.route("/api/admin/devices/<mac_address>/ping", methods=["GET"])
 @require_admin
 def admin_ping_device(mac_address: str):
-    """Actively probes device IP to test live reachability and update last_seen timestamp."""
+    """Actively probes device IP to test live reachability, falling back to recent Core heartbeat."""
     dev = database.get_esp32_device(mac_address)
     if not dev:
         return jsonify({"ok": False, "error": "Device not found."}), 404
-    ip = dev.get("ip_address")
-    if not ip or ip.startswith("172.") or ip.startswith("127."):
-        return jsonify({"ok": False, "online": False, "error": f"Invalid or non-LAN IP: {ip}"}), 200
-    try:
-        # Probe touch web server /heap endpoint
-        res = requests.get(f"http://{ip}/heap", timeout=1.5)
-        if res.status_code == 200:
-            database.update_esp32_device(mac_address, {})  # updates last_seen = CURRENT_TIMESTAMP
-            return jsonify({"ok": True, "online": True, "ip": ip, "data": res.json()})
-    except Exception as e:
-        logger.debug("Ping device %s (%s) error: %s", mac_address, ip, e)
-    return jsonify({"ok": True, "online": False, "ip": ip, "error": "Host unreachable on port 80"}), 200
+    ip = dev.get("ip_address") or ""
+    if ip and not ip.startswith("172.") and not ip.startswith("127."):
+        try:
+            res = requests.get(f"http://{ip}/heap", timeout=2.5)
+            if res.status_code == 200:
+                try:
+                    payload = res.json()
+                except Exception:
+                    payload = {}
+                database.touch_esp32_device_last_seen(mac_address, min_interval_sec=0.0)
+                return jsonify({
+                    "ok": True,
+                    "online": True,
+                    "ip": ip,
+                    "source": "direct_http",
+                    "data": payload,
+                }), 200
+        except Exception as e:
+            logger.debug("Ping device %s (%s) HTTP probe failed: %s", mac_address, ip, e)
+
+    is_online, secs_ago = database.compute_device_online_state(dev.get("last_seen"), threshold_sec=180)
+    if is_online:
+        return jsonify({
+            "ok": True,
+            "online": True,
+            "ip": ip,
+            "source": "heartbeat",
+            "last_seen_seconds_ago": secs_ago,
+            "note": f"Connected via Core heartbeat ({secs_ago}s ago; port 80 probe unreachable)",
+        }), 200
+
+    return jsonify({
+        "ok": True,
+        "online": False,
+        "ip": ip,
+        "source": "none",
+        "last_seen_seconds_ago": secs_ago,
+        "error": "Host unreachable on port 80 and no recent heartbeat",
+    }), 200
 
 
 @admin_discovery_bp.route("/api/admin/devices/<mac_address>/revoke", methods=["POST"])

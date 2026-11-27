@@ -556,5 +556,132 @@ class TestTouchReleaseService(IsolatedTestCase):
         self.assertEqual(self.client.post("/api/admin/firmware/upstream/download", json={}).status_code, 400)
 
 
+class TestDeviceOnlineHeartbeatAndFirstSync(IsolatedTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = app.test_client()
+        conn = database.get_db_connection()
+        try:
+            with conn:
+                conn.execute(
+                    "DELETE FROM esp32_devices WHERE mac_address IN ('94:a9:90:df:38:34', 'aa:bb:cc:dd:ee:99');"
+                )
+        finally:
+            conn.close()
+
+    def _login_admin(self):
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = "hb_admin"
+            sess["username"] = "admin"
+            sess["role"] = "admin"
+
+    def test_01_heartbeat_online_status_and_ping_fallback(self):
+        """Connected devices reporting via /api/device/config show Online even if port 80 probe fails."""
+        mac = "94:a9:90:df:38:34"
+        database.register_esp32_device(mac, "Bedside Touch", "192.168.33.29", "v0.1.0")
+        database.update_esp32_device(mac, {"is_approved": 1})
+
+        # Backdate last_seen past the 180s heartbeat window
+        conn = database.get_db_connection()
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE esp32_devices SET last_seen = datetime('now', '-3600 seconds') WHERE mac_address = ?;",
+                    (mac,),
+                )
+        finally:
+            conn.close()
+
+        self._login_admin()
+        devs_stale = self.client.get("/api/admin/devices").get_json()
+        target_stale = next((d for d in devs_stale if d["mac_address"] == mac), None)
+        self.assertIsNotNone(target_stale)
+        self.assertFalse(target_stale["is_online"])
+
+        import requests as req_mod
+        with patch("routes.admin_discovery.requests.get", side_effect=req_mod.ConnectionError("VLAN blocked")):
+            ping_stale = self.client.get(f"/api/admin/devices/{mac}/ping").get_json()
+        self.assertFalse(ping_stale["online"])
+        self.assertEqual(ping_stale["source"], "none")
+
+        # Device polls Core config -> refreshes last_seen
+        cfg_res = self.client.get(f"/api/device/config?device_id={mac}", environ_base={"REMOTE_ADDR": "192.168.33.29"})
+        self.assertEqual(cfg_res.status_code, 200)
+
+        devs_live = self.client.get("/api/admin/devices").get_json()
+        target_live = next((d for d in devs_live if d["mac_address"] == mac), None)
+        self.assertIsNotNone(target_live)
+        self.assertTrue(target_live["is_online"])
+
+        with patch("routes.admin_discovery.requests.get", side_effect=req_mod.ConnectionError("VLAN blocked")):
+            ping_live = self.client.get(f"/api/admin/devices/{mac}/ping").get_json()
+        self.assertTrue(ping_live["online"])
+        self.assertEqual(ping_live["source"], "heartbeat")
+        self.assertLessEqual(ping_live["last_seen_seconds_ago"], 180)
+
+    def test_02_first_time_register_syncs_profile_and_lock_without_overwriting_existing(self):
+        """First-time /api/devices/register persists Touch locks; subsequent registrations keep Admin settings."""
+        database.upsert_profile("oliver", {"display_name": "Oliver", "abs_tag": "oliver"})
+        database.upsert_profile("maya", {"display_name": "Maya", "abs_tag": "maya"})
+
+        mac = "aa:bb:cc:dd:ee:99"
+        r1 = self.client.post("/api/devices/register", json={
+            "mac_address": mac,
+            "friendly_name": "Playroom Touch",
+            "ip_address": "192.168.33.30",
+            "firmware_version": "v0.1.0",
+            "assigned_profile": "oliver",
+            "lock_player": True,
+            "locked_player_id": "yoto_player_1",
+            "parent_pin": "5678",
+        })
+        self.assertEqual(r1.status_code, 202)
+        dev = database.get_esp32_device(mac)
+        self.assertIsNotNone(dev)
+        self.assertEqual(dev["assigned_profile_id"], "oliver")
+        self.assertEqual(int(dev["lock_player"] or 0), 1)
+        self.assertEqual(dev["locked_player_id"], "yoto_player_1")
+        self.assertEqual(dev["parent_pin"], "5678")
+
+        # Admin updates profile/player/PIN in Core
+        database.update_esp32_device(mac, {
+            "assigned_profile_id": "maya",
+            "locked_player_id": "yoto_player_2",
+        })
+
+        # Subsequent boot registration must NOT clobber Admin overrides
+        r2 = self.client.post("/api/devices/register", json={
+            "mac_address": mac,
+            "friendly_name": "Playroom Touch",
+            "ip_address": "192.168.33.30",
+            "firmware_version": "v0.1.0",
+            "assigned_profile": "oliver",
+            "lock_player": True,
+            "locked_player_id": "yoto_player_1",
+            "parent_pin": "9999",
+        })
+        self.assertEqual(r2.status_code, 202)
+        dev_after = database.get_esp32_device(mac)
+        self.assertEqual(dev_after["assigned_profile_id"], "maya")
+        self.assertEqual(dev_after["locked_player_id"], "yoto_player_2")
+        self.assertEqual(dev_after["parent_pin"], "5678")
+
+        # Unknown initial profile must safely degrade to None instead of IntegrityError
+        mac_bad_prof = "aa:bb:cc:dd:ee:88"
+        r3 = self.client.post("/api/devices/register", json={
+            "mac_address": mac_bad_prof,
+            "friendly_name": "Guest Touch",
+            "ip_address": "192.168.33.31",
+            "firmware_version": "v0.1.0",
+            "assigned_profile": "unknown_profile_id",
+            "lock_player": True,
+            "locked_player_id": "yoto_player_3",
+        })
+        self.assertEqual(r3.status_code, 202)
+        dev_bad = database.get_esp32_device(mac_bad_prof)
+        self.assertIsNone(dev_bad["assigned_profile_id"])
+        self.assertEqual(dev_bad["locked_player_id"], "yoto_player_3")
+
+
 if __name__ == "__main__":
     unittest.main()

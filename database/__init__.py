@@ -19,7 +19,8 @@ from .profiles import (
 )
 from .devices import (
     register_esp32_device, get_esp32_device, list_esp32_devices, update_esp32_device,
-    revoke_esp32_device, delete_esp32_device, prune_stale_devices
+    revoke_esp32_device, delete_esp32_device, prune_stale_devices,
+    touch_esp32_device_last_seen, compute_device_online_state
 )
 from .media import (
     upsert_media_items, get_media_item_by_id, get_catalog_matrix, prune_stale_media_items,
@@ -56,6 +57,7 @@ __all__ = [
     "get_shared_rules", "set_shared_rule",
     "register_esp32_device", "get_esp32_device", "list_esp32_devices", "update_esp32_device",
     "revoke_esp32_device", "delete_esp32_device", "prune_stale_devices",
+    "touch_esp32_device_last_seen", "compute_device_online_state",
     "upsert_media_items", "get_media_item_by_id", "get_catalog_matrix", "prune_stale_media_items",
     "record_playback", "get_playback_history", "get_device_playback_history",
     "get_all_series_overrides", "set_media_series_override", "delete_media_series_override",
