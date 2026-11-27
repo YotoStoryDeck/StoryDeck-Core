@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="static/kiosk/icon.svg" alt="StoryDeck Logo" width="96" height="96">
+</p>
+
 # StoryDeck Core
 
 An open-source, community-ready smart hub and middleware broker that connects bedside hardware companion controllers ([**StoryDeck Touch**](https://github.com/YotoStoryDeck/StoryDeck-Touch)), **Audiobookshelf (ABS)** audio libraries, and physical **Yoto Players**.
@@ -174,11 +178,6 @@ Once running, StoryDeck Core will be available at `http://localhost:5055`:
   ```
 * **GitHub Actions CI & Failure Reporting:** [ci.yml](.github/workflows/ci.yml) runs on every push and pull request to `main` and `dev`, validating Python 3.11 + `ffmpeg` against `--unit-only -v --json-report` and checking all frontend JavaScript (`static/kiosk/js/*.js`, `static/js/*.js`) with Node 24 `node --check`. If any check fails on a push or same-repo PR, [post_ci_failure_comment.py](.github/scripts/post_ci_failure_comment.py) automatically posts or updates a structured commit comment with collapsible tracebacks and links to the failing run.
 * **Test Authoring & Architecture Guide:** See [tests/README.md](tests/README.md) for isolation rules, sanitization details, and test suite lessons learned.
-
-### Technical Maintenance Notes
-
-> STUBBORN_FACT: Kiosk `.grid .tile` cards in `static/kiosk/css/main.css` MUST be sized via `::before { content: ""; display: block; padding-top: 158.2%; }`, `position: absolute` on `.tile img`, and definite `repeat(auto-fill, minmax(<px>, 1fr))` column bounds — do not reintroduce CSS `aspect-ratio` with in-flow `height: 100%` `<img>` children or `minmax(clamp(...))`, which caused CSS Grid row heights to collapse and cards to overlap across browsers.
-> STUBBORN_FACT: `YotoPlaylistsMixin.upload_audio()` and `save_track_playlist()` in `clients/yoto/playlists.py` MUST retain exponential-backoff retry loops across `requests.RequestException`, `408`/`429`/`5xx` responses, and `401` forced OAuth token refreshes — long multi-hour `offline_series` builds run dozens of sequential track uploads where an unguarded transient DNS failure or token expiry aborts near completion.
 
 ---
 
