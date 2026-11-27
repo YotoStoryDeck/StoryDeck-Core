@@ -940,6 +940,91 @@ class TestBridgeEngine(unittest.TestCase):
             mock_retry.assert_called_once()
             self.assertEqual(mgr.get_slot("slot_fail_retry")["offline_status"], "building")
 
+    def test_offline_transfer_pause_stop_and_resume_controls(self):
+        """Verifies POST /api/cards/<id>/transfer supports pause, stop, and start/resume without auto-resuming paused/stopped slots."""
+        from core.bridge.offline import get_offline_manager
+
+        fake_item = {
+            "id": "item_ctrl",
+            "media": {
+                "duration": 1200.0,
+                "metadata": {"title": "Control Test Book"},
+                "chapters": [
+                    {"start": 0.0, "end": 600.0, "title": "Ch 1"},
+                    {"start": 600.0, "end": 1200.0, "title": "Ch 2"},
+                ],
+            },
+        }
+        mgr = get_bridge_manager()
+        off_mgr = get_offline_manager()
+        with patch.object(clients.abs_client, "get_item", return_value=fake_item), \
+             patch.object(clients.abs_client, "get_media_progress", return_value={}):
+            mgr.assign_abs_book_to_slot(
+                slot_id="slot_ctrl",
+                abs_item_id="item_ctrl",
+                title="Control Test Book",
+                mode="offline",
+            )
+
+        # 1. Pause persists 'paused' in SQLite and surfaces on GET /api/cards even without in-memory _jobs
+        r_pause = self.app.post("/api/cards/slot_ctrl/transfer", json={"action": "pause"})
+        self.assertEqual(r_pause.status_code, 200)
+        self.assertEqual(r_pause.get_json()["transcode"]["status"], "paused")
+        off_mgr._jobs.pop("slot_ctrl", None)
+        card_paused = self.app.get("/api/cards/slot_ctrl").get_json()
+        self.assertEqual(card_paused["offline_status"], "paused")
+        self.assertEqual(card_paused["transcode"]["status"], "paused")
+        self.assertEqual(off_mgr.resume_interrupted_jobs(), 0)
+
+        # 2. Stop persists 'stopped' in SQLite and is also skipped by startup auto-resume
+        r_stop = self.app.post("/api/cards/slot_ctrl/transfer", json={"action": "stop"})
+        self.assertEqual(r_stop.status_code, 200)
+        self.assertEqual(r_stop.get_json()["transcode"]["status"], "stopped")
+        off_mgr._jobs.pop("slot_ctrl", None)
+        card_stopped = self.app.get("/api/cards/slot_ctrl").get_json()
+        self.assertEqual(card_stopped["offline_status"], "stopped")
+        self.assertEqual(card_stopped["transcode"]["status"], "stopped")
+        self.assertEqual(off_mgr.resume_interrupted_jobs(), 0)
+
+        # 3. Start / resume clears pause/cancel flags, sets offline_status='building', and calls queue_transcode
+        with patch.object(off_mgr, "queue_transcode", return_value={"status": "queued"}) as mock_queue:
+            r_start = self.app.post("/api/cards/slot_ctrl/transfer", json={"action": "start"})
+            self.assertEqual(r_start.status_code, 200)
+            self.assertTrue(r_start.get_json()["success"])
+            mock_queue.assert_called_once()
+            self.assertEqual(mgr.get_slot("slot_ctrl")["offline_status"], "building")
+
+        # 4. Cancel clears active/paused/stopped state and resets offline_status to 'none'
+        r_cancel = self.app.post("/api/cards/slot_ctrl/transfer", json={"action": "cancel"})
+        self.assertEqual(r_cancel.status_code, 200)
+        self.assertEqual(r_cancel.get_json()["transcode"]["status"], "cancelled")
+        card_cancelled = self.app.get("/api/cards/slot_ctrl").get_json()
+        self.assertEqual(card_cancelled["offline_status"], "none")
+        self.assertNotIn("transcode", card_cancelled)
+
+        # 5. queue_transcode(replace_existing=True) supersedes an existing active job cleanly
+        with patch("threading.Thread") as mock_thread:
+            j1 = off_mgr.queue_transcode("slot_ctrl", offline_mode="book")
+            old_cancel = off_mgr._cancel_flags["slot_ctrl"]
+            old_gen = off_mgr._job_gen["slot_ctrl"]
+            self.assertFalse(old_cancel.is_set())
+
+            j2 = off_mgr.queue_transcode("slot_ctrl", offline_mode="series", replace_existing=True)
+            self.assertTrue(old_cancel.is_set())
+            self.assertEqual(off_mgr._job_gen["slot_ctrl"], old_gen + 1)
+            self.assertEqual(j2["offline_mode"], "series")
+            self.assertEqual(mock_thread.call_count, 2)
+
+            # Switching card to streaming mode auto-cancels the active offline job
+            r_stream = self.app.post("/api/cards/slot_ctrl/mode", json={"mode": "streaming"})
+            self.assertEqual(r_stream.status_code, 200)
+            self.assertIsNone(off_mgr.get_job_status("slot_ctrl"))
+            self.assertEqual(mgr.get_slot("slot_ctrl")["offline_status"], "none")
+
+        # 6. Invalid action rejected with HTTP 400
+        r_bad = self.app.post("/api/cards/slot_ctrl/transfer", json={"action": "invalid"})
+        self.assertEqual(r_bad.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

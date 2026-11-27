@@ -32,13 +32,14 @@ def _with_icon_urls(tracks: list, slot_id: str, base_url: str) -> list:
 
 
 def _attach_transcode_status(slot: dict, off_mgr) -> dict:
-    """Attaches live in-memory job status or persisted SQLite offline failure details onto a slot dict."""
+    """Attaches live in-memory job status or persisted SQLite offline state ('failed', 'paused', 'stopped') onto a slot dict."""
     slot_id = slot.get("slot_id") or ""
     job = off_mgr.get_job_status(slot_id)
     if job:
         slot["transcode"] = job
         return slot
-    if slot.get("mode") == "offline" and str(slot.get("offline_status") or "").lower() == "failed":
+    off_status = str(slot.get("offline_status") or "").lower()
+    if slot.get("mode") == "offline" and off_status in ("failed", "paused", "stopped"):
         raw_meta = slot.get("offline_meta")
         meta = {}
         if isinstance(raw_meta, str) and raw_meta:
@@ -55,9 +56,9 @@ def _attach_transcode_status(slot: dict, off_mgr) -> dict:
         total_cnt = len(tracks)
         slot["transcode"] = {
             "slot_id": slot_id,
-            "status": "failed",
+            "status": off_status,
             "offline_mode": slot.get("offline_mode") or "book",
-            "error": str(meta.get("error") or "Offline build failed"),
+            "error": str(meta.get("error") or "Offline build failed") if off_status == "failed" else None,
             "done": done_cnt,
             "total": total_cnt,
             "progress": (done_cnt / total_cnt) if total_cnt > 0 else 0.0,
@@ -190,7 +191,8 @@ def update_card(slot_id: str):
 @bridge_cards_bp.route("/api/cards/<slot_id>", methods=["DELETE"])
 @require_member
 def delete_card(slot_id: str):
-    """Deletes a card slot."""
+    """Deletes a card slot after cancelling any active offline transfer."""
+    get_offline_manager().cancel_job(slot_id)
     if get_bridge_manager().delete_slot(slot_id):
         return jsonify({"success": True})
     return jsonify({"error": "Slot not found"}), 404
@@ -258,31 +260,62 @@ def set_card_delivery_mode(slot_id: str):
         conn.close()
 
     slot = mgr.get_slot(slot_id) or slot
+    off_mgr = get_offline_manager()
     if target_mode == "offline":
-        job = get_offline_manager().queue_transcode(slot_id, base_url=base_url, offline_mode=submode, hours=hours)
+        job = off_mgr.queue_transcode(slot_id, base_url=base_url, offline_mode=submode, hours=hours, replace_existing=True)
         slot["transcode"] = job
-    elif target_mode == "streaming" and clients.yoto_client and slot.get("abs_item_id"):
-        try:
-            yoto_cid = slot.get("yoto_card_id") or None
-            fallback_cover = f"{base_url}/api/cover/{slot['abs_item_id']}"
-            cover_url = upload_abs_cover_to_yoto(slot["abs_item_id"], fallback_url=fallback_cover)
-            saved_id = clients.yoto_client.save_stream_playlist(
-                title=slot.get("series_name") if slot.get("group_kind") == "series" and slot.get("series_name") else slot.get("title", "Audiobook"),
-                tracks=_with_icon_urls(slot.get("tracks", []), slot_id, base_url),
-                card_id=yoto_cid,
-                cover_url=cover_url,
-                description=f"Streams {slot.get('title', '')} from Audiobookshelf"
-            )
-            if saved_id and saved_id != slot.get("yoto_card_id"):
-                slot["yoto_card_id"] = saved_id
-                with database.get_db_connection() as conn:
-                    conn.execute("UPDATE bridge_slots SET yoto_card_id = ? WHERE slot_id = ?;", (saved_id, slot_id))
-                    conn.execute("DELETE FROM media_items WHERE id = ? AND type IN ('yoto', 'yoto_myo');", (saved_id,))
-                    conn.commit()
-        except Exception as e:
-            logger.warning("Failed to switch slot %s to streaming playlist: %s", slot_id, e)
+    elif target_mode == "streaming":
+        off_mgr.cancel_job(slot_id)
+        if clients.yoto_client and slot.get("abs_item_id"):
+            try:
+                yoto_cid = slot.get("yoto_card_id") or None
+                fallback_cover = f"{base_url}/api/cover/{slot['abs_item_id']}"
+                cover_url = upload_abs_cover_to_yoto(slot["abs_item_id"], fallback_url=fallback_cover)
+                saved_id = clients.yoto_client.save_stream_playlist(
+                    title=slot.get("series_name") if slot.get("group_kind") == "series" and slot.get("series_name") else slot.get("title", "Audiobook"),
+                    tracks=_with_icon_urls(slot.get("tracks", []), slot_id, base_url),
+                    card_id=yoto_cid,
+                    cover_url=cover_url,
+                    description=f"Streams {slot.get('title', '')} from Audiobookshelf"
+                )
+                if saved_id and saved_id != slot.get("yoto_card_id"):
+                    slot["yoto_card_id"] = saved_id
+                    with database.get_db_connection() as conn:
+                        conn.execute("UPDATE bridge_slots SET yoto_card_id = ? WHERE slot_id = ?;", (saved_id, slot_id))
+                        conn.execute("DELETE FROM media_items WHERE id = ? AND type IN ('yoto', 'yoto_myo');", (saved_id,))
+                        conn.commit()
+            except Exception as e:
+                logger.warning("Failed to switch slot %s to streaming playlist: %s", slot_id, e)
 
     return jsonify({"success": True, "slot_id": slot_id, "mode": target_mode, "offline_mode": submode, "slot": slot})
+
+
+@bridge_cards_bp.route("/api/cards/<slot_id>/transfer", methods=["POST"])
+@require_member
+def control_card_transfer(slot_id: str):
+    """Pauses, stops, cancels, or starts/resumes an offline card transfer."""
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action") or "").strip().lower()
+    if action not in ("pause", "stop", "cancel", "start", "resume"):
+        return jsonify({"error": "action must be 'pause', 'stop', 'cancel', 'start', or 'resume'"}), 400
+
+    mgr = get_bridge_manager()
+    slot = mgr.get_slot(slot_id)
+    if not slot:
+        return jsonify({"error": "Slot not found"}), 404
+    if not (slot.get("abs_item_id") or "").strip():
+        return jsonify({"error": "Slot has no Audiobookshelf book assigned."}), 400
+
+    off_mgr = get_offline_manager()
+    if action == "pause":
+        job = off_mgr.pause_job(slot_id)
+    elif action == "stop":
+        job = off_mgr.stop_job(slot_id)
+    elif action == "cancel":
+        job = off_mgr.cancel_job(slot_id)
+    else:
+        job = off_mgr.resume_job(slot_id, base_url=request.host_url.rstrip("/"))
+    return jsonify({"success": True, "slot_id": slot_id, "action": action, "transcode": job})
 
 
 @bridge_cards_bp.route("/api/cards/<slot_id>/retry", methods=["POST"])
@@ -298,23 +331,7 @@ def retry_card_sync(slot_id: str):
 
     base_url = request.host_url.rstrip("/")
     if slot.get("mode") == "offline":
-        off_mgr = get_offline_manager()
-        off_mgr._verify_last_uploaded_track(slot, slot.get("tracks") or [])
-        with database.get_db_connection() as conn:
-            conn.execute(
-                "UPDATE bridge_slots SET offline_status = 'building', updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
-                (slot_id,),
-            )
-            conn.commit()
-        submode = str(slot.get("offline_mode") or "book")
-        hours = float(slot.get("offline_hours") or 5.0)
-        job = off_mgr.queue_transcode(
-            slot_id,
-            base_url=base_url,
-            offline_mode=submode,
-            hours=hours,
-            anchor_current_book=(submode == "series"),
-        )
+        job = get_offline_manager().resume_job(slot_id, base_url=base_url)
         return jsonify({"success": True, "slot_id": slot_id, "mode": "offline", "transcode": job})
 
     if not clients.yoto_client:
@@ -545,28 +562,32 @@ def assign_card_content():
             offline_mode=submode,
             hours=hours,
             anchor_current_book=anchor_cur,
+            replace_existing=True,
         )
         slot["transcode"] = job
-    elif slot_mode == "streaming" and clients.yoto_client and abs_item_id:
-        try:
-            yoto_cid = slot.get("yoto_card_id") or None
-            fallback_cover = f"{base_url}/api/cover/{abs_item_id}"
-            cover_url = upload_abs_cover_to_yoto(abs_item_id, fallback_url=fallback_cover, token=user_token)
-            saved_id = clients.yoto_client.save_stream_playlist(
-                title=playlist_title,
-                tracks=_with_icon_urls(slot.get("tracks", []), slot_key, base_url),
-                card_id=yoto_cid,
-                cover_url=cover_url,
-                description=f"Streams {slot.get('title', '')} from Audiobookshelf"
-            )
-            if saved_id:
-                slot["yoto_card_id"] = saved_id
-                with database.get_db_connection() as conn:
-                    conn.execute("UPDATE bridge_slots SET yoto_card_id = ? WHERE slot_id = ?;", (saved_id, slot_key))
-                    conn.execute("DELETE FROM media_items WHERE id = ? AND type IN ('yoto', 'yoto_myo');", (saved_id,))
-                    conn.commit()
-        except Exception as e:
-            logger.warning("Failed to push stream playlist to Yoto Cloud: %s", e)
+    elif slot_mode == "streaming":
+        if slot_key:
+            get_offline_manager().cancel_job(slot_key)
+        if clients.yoto_client and abs_item_id:
+            try:
+                yoto_cid = slot.get("yoto_card_id") or None
+                fallback_cover = f"{base_url}/api/cover/{abs_item_id}"
+                cover_url = upload_abs_cover_to_yoto(abs_item_id, fallback_url=fallback_cover, token=user_token)
+                saved_id = clients.yoto_client.save_stream_playlist(
+                    title=playlist_title,
+                    tracks=_with_icon_urls(slot.get("tracks", []), slot_key, base_url),
+                    card_id=yoto_cid,
+                    cover_url=cover_url,
+                    description=f"Streams {slot.get('title', '')} from Audiobookshelf"
+                )
+                if saved_id:
+                    slot["yoto_card_id"] = saved_id
+                    with database.get_db_connection() as conn:
+                        conn.execute("UPDATE bridge_slots SET yoto_card_id = ? WHERE slot_id = ?;", (saved_id, slot_key))
+                        conn.execute("DELETE FROM media_items WHERE id = ? AND type IN ('yoto', 'yoto_myo');", (saved_id,))
+                        conn.commit()
+            except Exception as e:
+                logger.warning("Failed to push stream playlist to Yoto Cloud: %s", e)
 
     return jsonify(slot)
 

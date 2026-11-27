@@ -258,21 +258,56 @@ function createCardItemElement(slot, isProfile) {
       <div style="margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35);">
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px;">
           <span style="font-size: 11px; font-weight: 600; color: #fca5a5;">❌ Offline build failed (${transcodeJob.done || 0}/${transcodeJob.total || 0} tracks)</span>
-          <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 8px; flex-shrink: 0;" onclick="retryCardSync('${escapeHtml(slot.slot_id)}')">🔄 Retry</button>
+          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'start')">🔄 Retry</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel & clear transfer status">✖️</button>
+          </div>
         </div>
         <div style="font-size: 11px; color: #fecaca; word-break: break-word;">${errText}</div>
       </div>
     `;
+  } else if (transcodeJob && transcodeJob.status === "paused") {
+    progressHtml = `
+      <div style="margin-top: 8px; padding: 7px 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <span style="font-size: 11px; font-weight: 600; color: #fcd34d;">⏸️ Offline transfer paused (${transcodeJob.done || 0}/${transcodeJob.total || 0} tracks)</span>
+          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+            <button class="btn btn-primary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'start')">▶️ Resume</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'stop')">⏹️ Stop</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel & clear transfer">✖️</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (transcodeJob && transcodeJob.status === "stopped") {
+    progressHtml = `
+      <div style="margin-top: 8px; padding: 7px 10px; border-radius: 6px; background: rgba(148, 163, 184, 0.10); border: 1px solid rgba(148, 163, 184, 0.28);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <span style="font-size: 11px; color: var(--text-secondary);">⏹️ Offline transfer stopped (${transcodeJob.done || 0}/${transcodeJob.total || 0} tracks)</span>
+          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+            <button class="btn btn-primary btn-sm" style="font-size: 10px; padding: 2px 8px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'start')">▶️ Start</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel & clear transfer">✖️</button>
+          </div>
+        </div>
+      </div>
+    `;
   } else if (transcodeJob && transcodeJob.status !== "ready") {
     const pct = Math.round((transcodeJob.progress || 0) * 100);
+    const isPausing = transcodeJob.status === "pausing";
+    const isStopping = transcodeJob.status === "stopping";
     const curLabel = transcodeJob.current_title
       ? ` — Track ${transcodeJob.current_track || (transcodeJob.done + 1)}: ${escapeHtml(transcodeJob.current_title)}`
       : "";
     progressHtml = `
       <div style="margin-top: 6px;">
-        <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--accent-abs); margin-bottom: 2px; gap: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--accent-abs); margin-bottom: 3px; gap: 6px;">
           <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">⏳ ${escapeHtml(transcodeJob.status)} (${transcodeJob.done}/${transcodeJob.total} tracks)${curLabel}</span>
-          <span style="flex-shrink: 0;">${pct}%</span>
+          <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+            <span>${pct}%</span>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 1px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'pause')" ${(isPausing || isStopping) ? 'disabled' : ''} title="Pause transfer">⏸️</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 1px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'stop')" ${isStopping ? 'disabled' : ''} title="Stop transfer">⏹️</button>
+            <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 1px 6px;" onclick="controlCardTransfer('${escapeHtml(slot.slot_id)}', 'cancel')" title="Cancel transfer">✖️</button>
+          </div>
         </div>
         <div style="height: 4px; background: rgba(0,0,0,0.3); border-radius: 2px; overflow: hidden;">
           <div style="width: ${pct}%; height: 100%; background: var(--accent-abs); transition: width 0.3s ease;"></div>
@@ -454,6 +489,33 @@ async function switchCardDeliveryMode(slotId, mode) {
     }
   } catch (err) {
     console.error("Mode switch error:", err);
+  }
+}
+
+async function controlCardTransfer(slotId, action) {
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(slotId)}/transfer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const msgMap = {
+        pause: "Pausing offline transfer...",
+        stop: "Stopping offline transfer...",
+        cancel: "Offline transfer cancelled.",
+        start: "Starting offline transfer...",
+        resume: "Resuming offline transfer..."
+      };
+      showToast(msgMap[action] || "Transfer updated.", "info");
+      loadCards();
+    } else {
+      showToast(data.error || `Failed to ${action} transfer.`, "danger");
+    }
+  } catch (err) {
+    console.error("Card transfer control error:", err);
+    showToast("Network error updating transfer.", "danger");
   }
 }
 

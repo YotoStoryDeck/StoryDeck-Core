@@ -221,8 +221,9 @@ async function initPortal() {
     if (yotoTokenValid && !(window.StoryDeckHealth && window.StoryDeckHealth.isOffline())) {
       pollPlayerStatus();
       const cardsTab = document.getElementById("tabCards");
+      const activeTranscodeStatuses = new Set(["queued", "encoding", "uploading", "processing", "pausing", "stopping"]);
       const hasActiveTranscode = (cardSlots || []).some(
-        s => s.transcode && s.transcode.status && s.transcode.status !== "ready" && s.transcode.status !== "failed"
+        s => s.transcode && activeTranscodeStatuses.has(s.transcode.status)
       );
       if ((cardsTab && cardsTab.classList.contains("active")) || hasActiveTranscode) {
         if (typeof refreshCardsTranscodeProgress === "function") {

@@ -111,6 +111,9 @@ class OfflineTranscodeManager:
 
     def __init__(self):
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._pause_flags: Dict[str, threading.Event] = {}
+        self._cancel_flags: Dict[str, threading.Event] = {}
+        self._job_gen: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._queue_sem = threading.Semaphore(1)
 
@@ -124,7 +127,7 @@ class OfflineTranscodeManager:
     def is_busy(self, slot_id: str) -> bool:
         with self._lock:
             job = self._jobs.get(slot_id)
-            return bool(job and job.get("status") in ("queued", "encoding", "uploading", "processing"))
+            return bool(job and job.get("status") in ("queued", "encoding", "uploading", "processing", "pausing", "stopping"))
 
     def _verify_last_uploaded_track(self, slot: Dict[str, Any], tracks: List[Dict[str, Any]]) -> bool:
         """
@@ -226,7 +229,7 @@ class OfflineTranscodeManager:
                     continue
                 tracks = slot.get("tracks") or []
                 off_status = str(slot.get("offline_status") or "").lower()
-                if off_status == "failed":
+                if off_status in ("failed", "paused", "stopped"):
                     continue
                 is_building = off_status == "building"
                 has_unencoded = bool(tracks) and any(not str(t.get("yoto_sha256") or "").strip() for t in tracks)
@@ -257,12 +260,25 @@ class OfflineTranscodeManager:
         offline_mode: Optional[str] = None,
         hours: float = 5.0,
         anchor_current_book: bool = False,
+        replace_existing: bool = False,
     ) -> Dict[str, Any]:
-        """Queues a card slot for offline transcoding and Yoto upload."""
+        """Queues a card slot for offline transcoding and Yoto upload, optionally superseding any active job."""
         with self._lock:
             existing = self._jobs.get(slot_id)
-            if existing and existing.get("status") in ("queued", "encoding", "uploading", "processing"):
+            if not replace_existing and existing and existing.get("status") in ("queued", "encoding", "uploading", "processing"):
                 return dict(existing)
+
+            if slot_id in self._cancel_flags:
+                self._cancel_flags[slot_id].set()
+            if slot_id in self._pause_flags:
+                self._pause_flags[slot_id].clear()
+
+            gen = self._job_gen.get(slot_id, 0) + 1
+            self._job_gen[slot_id] = gen
+            pause_ev = threading.Event()
+            cancel_ev = threading.Event()
+            self._pause_flags[slot_id] = pause_ev
+            self._cancel_flags[slot_id] = cancel_ev
 
             job = {
                 "slot_id": slot_id,
@@ -280,11 +296,22 @@ class OfflineTranscodeManager:
 
         thread = threading.Thread(
             target=self._run_job_guarded,
-            args=(slot_id, base_url, offline_mode, float(hours or 5.0), anchor_current_book),
+            args=(slot_id, base_url, offline_mode, float(hours or 5.0), anchor_current_book, gen, pause_ev, cancel_ev),
             daemon=True,
         )
         thread.start()
         return job
+
+    def cancel_job(self, slot_id: str) -> Dict[str, Any]:
+        """Cancels and clears any active, paused, stopped, or failed offline transfer for a slot."""
+        with self._lock:
+            self._job_gen[slot_id] = self._job_gen.get(slot_id, 0) + 1
+            if slot_id in self._pause_flags:
+                self._pause_flags[slot_id].clear()
+            self._cancel_flags.setdefault(slot_id, threading.Event()).set()
+            self._jobs.pop(slot_id, None)
+        self._persist_job_status(slot_id, "none")
+        return {"slot_id": slot_id, "status": "cancelled"}
 
     def _run_job_guarded(
         self,
@@ -293,9 +320,120 @@ class OfflineTranscodeManager:
         offline_mode: Optional[str],
         hours: float,
         anchor_current_book: bool = False,
+        job_gen: Optional[int] = None,
+        pause_ev: Optional[threading.Event] = None,
+        cancel_ev: Optional[threading.Event] = None,
     ):
         with self._queue_sem:
-            self._run_job(slot_id, base_url, offline_mode=offline_mode, hours=hours, anchor_current_book=anchor_current_book)
+            self._run_job(
+                slot_id,
+                base_url,
+                offline_mode=offline_mode,
+                hours=hours,
+                anchor_current_book=anchor_current_book,
+                job_gen=job_gen,
+                pause_ev=pause_ev,
+                cancel_ev=cancel_ev,
+            )
+
+    def pause_job(self, slot_id: str) -> Dict[str, Any]:
+        """Requests an active or queued offline transfer to pause cleanly without blocking the queue."""
+        persist_now = False
+        with self._lock:
+            ev = self._pause_flags.setdefault(slot_id, threading.Event())
+            ev.set()
+            cur = self._jobs.get(slot_id)
+            if cur and cur.get("status") in ("encoding", "uploading", "processing", "pausing"):
+                cur["status"] = "pausing"
+                cur["updated_at"] = time.time()
+                return dict(cur)
+            if cur and cur.get("status") == "queued":
+                cur["status"] = "paused"
+                cur["updated_at"] = time.time()
+                persist_now = True
+                res = dict(cur)
+            else:
+                slot = get_bridge_manager().get_slot(slot_id) or {}
+                tracks = slot.get("tracks") or []
+                done_cnt = sum(1 for t in tracks if str(t.get("yoto_sha256") or "").strip())
+                total_cnt = len(tracks)
+                res = {
+                    "slot_id": slot_id,
+                    "status": "paused",
+                    "offline_mode": slot.get("offline_mode") or "book",
+                    "done": done_cnt,
+                    "total": total_cnt,
+                    "progress": (done_cnt / total_cnt) if total_cnt > 0 else 0.0,
+                    "error": None,
+                    "updated_at": time.time(),
+                }
+                self._jobs[slot_id] = dict(res)
+                persist_now = True
+        if persist_now:
+            self._persist_job_status(slot_id, "paused")
+        return res
+
+    def stop_job(self, slot_id: str) -> Dict[str, Any]:
+        """Requests an active or paused offline transfer to stop cleanly while keeping uploaded tracks."""
+        persist_now = False
+        with self._lock:
+            self._pause_flags.setdefault(slot_id, threading.Event()).clear()
+            self._cancel_flags.setdefault(slot_id, threading.Event()).set()
+            cur = self._jobs.get(slot_id)
+            if cur and cur.get("status") in ("encoding", "uploading", "processing", "pausing", "stopping"):
+                cur["status"] = "stopping"
+                cur["updated_at"] = time.time()
+                return dict(cur)
+            if cur and cur.get("status") in ("queued", "paused"):
+                cur["status"] = "stopped"
+                cur["updated_at"] = time.time()
+                persist_now = True
+                res = dict(cur)
+            else:
+                slot = get_bridge_manager().get_slot(slot_id) or {}
+                tracks = slot.get("tracks") or []
+                done_cnt = sum(1 for t in tracks if str(t.get("yoto_sha256") or "").strip())
+                total_cnt = len(tracks)
+                res = {
+                    "slot_id": slot_id,
+                    "status": "stopped",
+                    "offline_mode": slot.get("offline_mode") or "book",
+                    "done": done_cnt,
+                    "total": total_cnt,
+                    "progress": (done_cnt / total_cnt) if total_cnt > 0 else 0.0,
+                    "error": None,
+                    "updated_at": time.time(),
+                }
+                self._jobs[slot_id] = dict(res)
+                persist_now = True
+        if persist_now:
+            self._persist_job_status(slot_id, "stopped")
+        return res
+
+    def resume_job(self, slot_id: str, base_url: str = "") -> Dict[str, Any]:
+        """Resumes a paused, stopped, or failed offline transfer from the last verified track."""
+        mgr = get_bridge_manager()
+        slot = mgr.get_slot(slot_id)
+        if not slot:
+            raise ValueError("Slot not found")
+        self._verify_last_uploaded_track(slot, slot.get("tracks") or [])
+        with database.get_db_connection() as conn:
+            conn.execute(
+                "UPDATE bridge_slots SET offline_status = 'building', updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
+                (slot_id,),
+            )
+            conn.commit()
+        submode = str(slot.get("offline_mode") or "book")
+        hours = float(slot.get("offline_hours") or 5.0)
+        eff_base = base_url or _extract_slot_base_url(slot)
+        return self.queue_transcode(
+            slot_id,
+            base_url=eff_base,
+            offline_mode=submode,
+            hours=hours,
+            anchor_current_book=(submode == "series"),
+            replace_existing=True,
+        )
 
     def _resolve_slot_abs_token(self, slot: Dict[str, Any]) -> Optional[str]:
         owner_user_id = str(slot.get("owner_user_id") or "").strip()
@@ -669,7 +807,43 @@ class OfflineTranscodeManager:
         offline_mode: Optional[str] = None,
         hours: float = 5.0,
         anchor_current_book: bool = False,
+        job_gen: Optional[int] = None,
+        pause_ev: Optional[threading.Event] = None,
+        cancel_ev: Optional[threading.Event] = None,
     ):
+        if pause_ev is None:
+            pause_ev = self._pause_flags.setdefault(slot_id, threading.Event())
+        if cancel_ev is None:
+            cancel_ev = self._cancel_flags.setdefault(slot_id, threading.Event())
+
+        offline_meta: Dict[str, Any] = {}
+
+        def _is_current_gen() -> bool:
+            return job_gen is None or self._job_gen.get(slot_id) == job_gen
+
+        def _check_interrupted(save_live_cb=None) -> Optional[str]:
+            is_cur = _is_current_gen()
+            if cancel_ev.is_set() or not is_cur:
+                if save_live_cb and is_cur:
+                    save_live_cb(force=True)
+                if is_cur:
+                    self._persist_job_status(slot_id, "stopped", offline_meta=offline_meta)
+                    self._update_job(slot_id, status="stopped")
+                logger.info("Offline [%s]: transfer stopped cleanly", slot_id)
+                return "stopped"
+            if pause_ev.is_set():
+                if save_live_cb:
+                    save_live_cb(force=True)
+                if is_cur:
+                    self._persist_job_status(slot_id, "paused", offline_meta=offline_meta)
+                    self._update_job(slot_id, status="paused")
+                logger.info("Offline [%s]: transfer paused cleanly", slot_id)
+                return "paused"
+            return None
+
+        if _check_interrupted():
+            return
+
         mgr = get_bridge_manager()
         slot = mgr.get_slot(slot_id)
         if not slot:
@@ -687,7 +861,6 @@ class OfflineTranscodeManager:
         speed = max(0.5, min(2.5, float(slot.get("speed") or 1.0)))
         submode = normalize_offline_submode(offline_mode or slot.get("offline_mode"), slot)
         eff_hours = float(hours or slot.get("offline_hours") or 5.0)
-        offline_meta: Dict[str, Any] = {}
 
         try:
             tracks, offline_meta = self._plan_offline_tracks(
@@ -703,6 +876,9 @@ class OfflineTranscodeManager:
             logger.warning("Offline track planning fallback for %s: %s", slot_id, e)
             tracks = slot.get("tracks") or []
             offline_meta = {}
+
+        if _check_interrupted():
+            return
 
         if not tracks:
             err = "Slot has no tracks"
@@ -748,6 +924,8 @@ class OfflineTranscodeManager:
 
         def _save_live_batch(force: bool = False):
             nonlocal yoto_card_id
+            if not _is_current_gen() or cancel_ev.is_set():
+                return
             if not clients.yoto_client or not hasattr(clients.yoto_client, "save_mixed_playlist"):
                 return
             done_count = sum(1 for x in uploaded_infos if x is not None)
@@ -808,6 +986,8 @@ class OfflineTranscodeManager:
         conn = database.get_db_connection()
         try:
             for idx, trk in enumerate(tracks):
+                if _check_interrupted(_save_live_batch):
+                    return
                 track_idx = int(trk["track_idx"])
                 t_book_id = str(trk.get("abs_item_id") or abs_item_id)
                 start_sec = float(trk["start_time"])
@@ -853,6 +1033,12 @@ class OfflineTranscodeManager:
                 audio_buffer = bytearray()
                 for chunk in streamer.stream_segment(b_sources, start_sec, end_sec, auth_header=b_auth, speed=speed):
                     audio_buffer.extend(chunk)
+                    if cancel_ev.is_set() or pause_ev.is_set():
+                        if _check_interrupted(_save_live_batch):
+                            return
+
+                if _check_interrupted(_save_live_batch):
+                    return
 
                 expected_track_sec = max(0.1, (end_sec - start_sec) / speed)
                 expected_bytes = streamer.seconds_to_bytes(expected_track_sec, 1.0)
@@ -914,6 +1100,9 @@ class OfflineTranscodeManager:
                 if (idx + 1) < total_tracks:
                     _save_live_batch(force=False)
 
+            if _check_interrupted(_save_live_batch) or not _is_current_gen():
+                return
+
             uploaded_tracks = [x for x in uploaded_infos if x is not None]
             mode_desc = (
                 f"next {eff_hours:g}h window"
@@ -931,6 +1120,9 @@ class OfflineTranscodeManager:
                 cover_url=cover_url,
                 description=f"Offline audiobook ({mode_desc}): {slot.get('title', '')} by {slot.get('author', '')}",
             )
+
+            if not _is_current_gen():
+                return
 
             if offline_meta:
                 offline_meta["status"] = "ready"
@@ -961,13 +1153,14 @@ class OfflineTranscodeManager:
 
         except Exception as e:
             logger.error("Error during offline transcode/upload for slot %s: %s", slot_id, e)
-            self._persist_job_failure(slot_id, str(e), offline_meta)
-            self._update_job(slot_id, status="failed", error=str(e))
+            if _is_current_gen():
+                self._persist_job_failure(slot_id, str(e), offline_meta)
+                self._update_job(slot_id, status="failed", error=str(e))
         finally:
             conn.close()
 
-    def _persist_job_failure(self, slot_id: str, error_msg: str, offline_meta: Optional[Dict[str, Any]] = None):
-        """Persists offline build failure state & message in SQLite so errors survive restarts and display in the Cards UI."""
+    def _persist_job_status(self, slot_id: str, status: str, error_msg: str = "", offline_meta: Optional[Dict[str, Any]] = None):
+        """Persists offline build state ('failed', 'paused', 'stopped', etc.) in SQLite so status survives restarts."""
         conn = database.get_db_connection()
         try:
             meta: Dict[str, Any] = dict(offline_meta) if isinstance(offline_meta, dict) else {}
@@ -980,18 +1173,26 @@ class OfflineTranscodeManager:
                             meta = parsed
                     except Exception:
                         meta = {}
-            meta["status"] = "failed"
-            meta["error"] = str(error_msg or "Offline build failed")
-            meta["failed_at"] = time.time()
+            meta["status"] = status
+            if status == "failed":
+                meta["error"] = str(error_msg or "Offline build failed")
+                meta["failed_at"] = time.time()
+            else:
+                meta.pop("error", None)
+                meta["updated_at"] = time.time()
             with conn:
                 conn.execute(
-                    "UPDATE bridge_slots SET offline_status = 'failed', offline_meta = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
-                    (json.dumps(meta), slot_id),
+                    "UPDATE bridge_slots SET offline_status = ?, offline_meta = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
+                    (status, json.dumps(meta), slot_id),
                 )
         except Exception as db_err:
-            logger.debug("_persist_job_failure notice for %s: %s", slot_id, db_err)
+            logger.debug("_persist_job_status notice for %s: %s", slot_id, db_err)
         finally:
             conn.close()
+
+    def _persist_job_failure(self, slot_id: str, error_msg: str, offline_meta: Optional[Dict[str, Any]] = None):
+        """Persists offline build failure state & message in SQLite so errors survive restarts and display in the Cards UI."""
+        self._persist_job_status(slot_id, "failed", error_msg=error_msg, offline_meta=offline_meta)
 
     def _update_job(self, slot_id: str, **kwargs):
         with self._lock:
