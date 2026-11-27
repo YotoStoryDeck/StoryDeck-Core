@@ -331,7 +331,7 @@ def _resolve_sso_identity(require_admin_role: bool = False) -> Optional[Dict[str
     except Exception:
         sso_cfg = {}
 
-    if not sso_cfg.get("forward_auth_enabled", True):
+    if not sso_cfg.get("forward_auth_enabled", False):
         return None
     if not is_request_from_trusted_proxy():
         return None

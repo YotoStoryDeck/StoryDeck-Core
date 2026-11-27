@@ -102,7 +102,7 @@ function renderSsoConfig(data) {
     ? "SSO"
     : rawProvider;
 
-  setChecked("ssoForwardAuthEnabled", cfg.forward_auth_enabled !== false);
+  setChecked("ssoForwardAuthEnabled", Boolean(cfg.forward_auth_enabled));
   setVal("ssoProviderName", normalizedProvider);
   setVal("ssoDefaultRole", cfg.default_role || "member");
   setVal("ssoAdminGroup", cfg.admin_group || "");
@@ -131,7 +131,7 @@ function renderSsoConfig(data) {
 
   const badge = document.getElementById("ssoConfigStatusBadge");
   if (badge) {
-    const fwdActive = cfg.forward_auth_enabled !== false;
+    const fwdActive = Boolean(cfg.forward_auth_enabled);
     const oidcActive = Boolean(cfg.oidc_enabled);
     badge.className = (fwdActive || oidcActive) ? "badge badge-info" : "badge badge-subtle";
     if (oidcActive && fwdActive) {

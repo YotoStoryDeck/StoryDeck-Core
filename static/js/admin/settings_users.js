@@ -89,7 +89,7 @@ function updateUsersKpis() {
   }
 
   const cfg = cachedSsoMeta.sso_config || {};
-  const fwdEnabled = cfg.forward_auth_enabled !== false;
+  const fwdEnabled = Boolean(cfg.forward_auth_enabled);
   const oidcEnabled = Boolean(cfg.oidc_enabled);
   const rawProv = String(cfg.provider_name || "Authentik").trim();
   const providerName = (!rawProv || ["reverse proxy", "generic forwardauth"].includes(rawProv.toLowerCase()))

@@ -168,6 +168,42 @@ class TestUIOverhaulAndSSO(IsolatedTestCase):
         self.assertEqual(health_res.status_code, 200)
         self.assertEqual(health_res.get_json().get("status"), "healthy")
 
+    def test_03b_sso_disabled_by_default(self):
+        """Reverse-proxy ForwardAuth and OIDC SSO are disabled by default and ignore proxy headers."""
+        self.assertFalse(database.DEFAULT_SSO_CONFIG["forward_auth_enabled"])
+        self.assertFalse(database.DEFAULT_SSO_CONFIG["oidc_enabled"])
+        sso_cfg = database.get_sso_config()
+        self.assertFalse(sso_cfg.get("forward_auth_enabled"))
+        self.assertFalse(sso_cfg.get("oidc_enabled"))
+
+        pub_res = self.client.get("/api/auth/sso/config")
+        self.assertEqual(pub_res.status_code, 200)
+        sso_meta = pub_res.get_json()["sso"]
+        self.assertFalse(sso_meta["enabled"])
+        self.assertFalse(sso_meta["forward_auth_enabled"])
+        self.assertFalse(sso_meta["oidc_enabled"])
+        self.assertEqual(sso_meta["login_mode"], "none")
+
+        me_res = self.client.get(
+            "/api/auth/me",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+            headers={"X-authentik-username": "should_not_auth_by_default"},
+        )
+        self.assertEqual(me_res.status_code, 200)
+        me_json = me_res.get_json()
+        self.assertEqual(me_json["user"]["auth_type"], "lan_guest")
+        self.assertIsNone(database.get_user_by_username("should_not_auth_by_default"))
+
+        adm_res = self.client.get(
+            "/api/admin/users",
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+            headers={
+                "X-authentik-username": "should_not_auth_by_default",
+                "X-authentik-groups": "storydeck-admins",
+            },
+        )
+        self.assertEqual(adm_res.status_code, 401)
+
     def test_04_sso_config_api_rbac_persistence_and_validation(self):
         """Verifies RBAC, secret masking/preservation, CIDR validation, LAN toggle, and OIDC callback placeholder."""
         lan_res = self.client.get("/api/admin/auth/sso-config", environ_base={"REMOTE_ADDR": "192.168.1.88"})
@@ -312,6 +348,7 @@ class TestUIOverhaulAndSSO(IsolatedTestCase):
 
     def test_07_sso_initial_match_by_email_then_username_and_uid_binding(self):
         """Matches unbound accounts by email first, then username, binds immutable UID, and survives later renames."""
+        database.set_system_setting("sso_config", {**database.DEFAULT_SSO_CONFIG, "forward_auth_enabled": True})
         by_email_user = database.create_admin_user(
             "sso_ui_local_alice",
             "AliceSecret1!",
@@ -370,6 +407,7 @@ class TestUIOverhaulAndSSO(IsolatedTestCase):
 
     def test_08_sso_unmatched_user_auto_added_and_prevents_hijack(self):
         """Unmatched SSO user is auto-added; another UID with same username/email cannot hijack the bound account."""
+        database.set_system_setting("sso_config", {**database.DEFAULT_SSO_CONFIG, "forward_auth_enabled": True})
         res_new = self.client.get(
             "/api/auth/me",
             environ_base={"REMOTE_ADDR": "127.0.0.1"},

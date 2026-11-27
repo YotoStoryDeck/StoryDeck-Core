@@ -105,7 +105,7 @@ def _sso_public_meta() -> dict:
     sso_cfg = database.get_sso_config()
     raw_provider = str(sso_cfg.get("provider_name") or "Authentik").strip()
     provider_name = "SSO" if (not raw_provider or raw_provider.lower() in ("reverse proxy", "generic forwardauth")) else raw_provider
-    forward_auth_enabled = bool(sso_cfg.get("forward_auth_enabled", True))
+    forward_auth_enabled = bool(sso_cfg.get("forward_auth_enabled", False))
     oidc_enabled = bool(sso_cfg.get("oidc_enabled", False))
     oidc_ready = bool(oidc_enabled and sso_cfg.get("oidc_issuer_url") and sso_cfg.get("oidc_client_id"))
 
@@ -384,7 +384,7 @@ def admin_proxy_check():
         "effective_client_ip": effective_ip,
         "x_forwarded_for": fwd_for,
         "x_forwarded_proto": fwd_proto or request.scheme,
-        "forward_auth_enabled": bool(sso_cfg.get("forward_auth_enabled", True)),
+        "forward_auth_enabled": bool(sso_cfg.get("forward_auth_enabled", False)),
         "headers": detected,
     }), 200
 
@@ -413,7 +413,7 @@ def sso_login_dispatcher():
     if sso_cfg.get("oidc_enabled"):
         return redirect(f"/api/auth/oidc/login?next={quote(next_url)}")
 
-    if sso_cfg.get("forward_auth_enabled", True):
+    if sso_cfg.get("forward_auth_enabled", False):
         identity = _resolve_sso_identity(require_admin_role=False)
         if identity:
             session["user_id"] = identity["id"]

@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 from .connection import get_db_connection, LEGACY_CONFIG_PATH, DB_PATH, logger
 
 DEFAULT_SSO_CONFIG: Dict[str, Any] = {
-    "forward_auth_enabled": True,
+    "forward_auth_enabled": False,
     "provider_name": "Authentik",
     "header_subject": "X-authentik-uid",
     "header_username": "X-authentik-username",
