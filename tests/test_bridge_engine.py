@@ -893,6 +893,53 @@ class TestBridgeEngine(unittest.TestCase):
                 conn.execute("DELETE FROM media_items WHERE id LIKE 'ser_start_b%';")
                 conn.commit()
 
+    def test_offline_failure_persists_error_and_retry_endpoint(self):
+        """Verifies failed offline builds persist error details in SQLite, expose them on /api/cards, and retry via POST /api/cards/<id>/retry."""
+        from core.bridge.offline import get_offline_manager
+
+        fake_item = {
+            "id": "item_fail",
+            "media": {
+                "duration": 1200.0,
+                "metadata": {"title": "Fail Test Book"},
+                "chapters": [
+                    {"start": 0.0, "end": 600.0, "title": "Ch 1"},
+                    {"start": 600.0, "end": 1200.0, "title": "Ch 2"},
+                ],
+            },
+        }
+        mgr = get_bridge_manager()
+        off_mgr = get_offline_manager()
+        with patch.object(clients.abs_client, "get_item", return_value=fake_item), \
+             patch.object(clients.abs_client, "get_media_progress", return_value={}):
+            mgr.assign_abs_book_to_slot(
+                slot_id="slot_fail_retry",
+                abs_item_id="item_fail",
+                title="Fail Test Book",
+                mode="offline",
+            )
+            with patch("core.bridge.offline.shutil.which", return_value=None):
+                off_mgr._jobs["slot_fail_retry"] = {"slot_id": "slot_fail_retry", "status": "queued"}
+                off_mgr._run_job("slot_fail_retry", base_url="http://localhost:5055", offline_mode="book", hours=5.0)
+
+        # Clear in-memory job cache to verify GET /api/cards reads persisted SQLite error state
+        off_mgr._jobs.pop("slot_fail_retry", None)
+        res_list = self.app.get("/api/cards")
+        self.assertEqual(res_list.status_code, 200)
+        card_entry = next((c for c in res_list.get_json() if c["slot_id"] == "slot_fail_retry"), None)
+        self.assertIsNotNone(card_entry)
+        self.assertEqual(card_entry["offline_status"], "failed")
+        self.assertEqual(card_entry["transcode"]["status"], "failed")
+        self.assertIn("ffmpeg", card_entry["transcode"]["error"].lower())
+
+        with patch.object(off_mgr, "queue_transcode", return_value={"status": "queued"}) as mock_retry:
+            res_retry = self.app.post("/api/cards/slot_fail_retry/retry")
+            self.assertEqual(res_retry.status_code, 200)
+            payload = res_retry.get_json()
+            self.assertTrue(payload["success"])
+            mock_retry.assert_called_once()
+            self.assertEqual(mgr.get_slot("slot_fail_retry")["offline_status"], "building")
+
 
 if __name__ == "__main__":
     unittest.main()

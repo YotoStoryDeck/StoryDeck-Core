@@ -9,9 +9,10 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system dependencies if required for Pillow
+# Install system dependencies if required for Pillow & StoryDeck Bridge audio encoding
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    ffmpeg \
     libjpeg62-turbo-dev \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*

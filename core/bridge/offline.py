@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -224,7 +225,10 @@ class OfflineTranscodeManager:
                 if slot.get("kind") in ("profile_cache", "ephemeral_offline"):
                     continue
                 tracks = slot.get("tracks") or []
-                is_building = str(slot.get("offline_status") or "").lower() == "building"
+                off_status = str(slot.get("offline_status") or "").lower()
+                if off_status == "failed":
+                    continue
+                is_building = off_status == "building"
                 has_unencoded = bool(tracks) and any(not str(t.get("yoto_sha256") or "").strip() for t in tracks)
                 if not is_building and not has_unencoded:
                     continue
@@ -674,13 +678,16 @@ class OfflineTranscodeManager:
 
         abs_item_id = slot.get("abs_item_id")
         if not abs_item_id or not clients.abs_client:
-            self._update_job(slot_id, status="failed", error="No ABS client or item configured")
+            err = "No ABS client or item configured"
+            self._persist_job_failure(slot_id, err)
+            self._update_job(slot_id, status="failed", error=err)
             return
 
         abs_token = self._resolve_slot_abs_token(slot)
         speed = max(0.5, min(2.5, float(slot.get("speed") or 1.0)))
         submode = normalize_offline_submode(offline_mode or slot.get("offline_mode"), slot)
         eff_hours = float(hours or slot.get("offline_hours") or 5.0)
+        offline_meta: Dict[str, Any] = {}
 
         try:
             tracks, offline_meta = self._plan_offline_tracks(
@@ -698,7 +705,16 @@ class OfflineTranscodeManager:
             offline_meta = {}
 
         if not tracks:
-            self._update_job(slot_id, status="failed", error="Slot has no tracks")
+            err = "Slot has no tracks"
+            self._persist_job_failure(slot_id, err, offline_meta)
+            self._update_job(slot_id, status="failed", error=err)
+            return
+
+        if not shutil.which("ffmpeg"):
+            err = "ffmpeg binary not found in PATH — install ffmpeg to encode offline audio."
+            logger.error("Error during offline transcode/upload for slot %s: %s", slot_id, err)
+            self._persist_job_failure(slot_id, err, offline_meta)
+            self._update_job(slot_id, status="failed", error=err, total=len(tracks))
             return
 
         total_tracks = len(tracks)
@@ -716,7 +732,9 @@ class OfflineTranscodeManager:
         first_book_id = str(tracks[0].get("abs_item_id") or abs_item_id)
         first_sources, _ = self._build_sources_for_book(first_book_id, abs_token, sources_cache)
         if not first_sources:
-            self._update_job(slot_id, status="failed", error="ABS item has no audio files")
+            err = "ABS item has no audio files"
+            self._persist_job_failure(slot_id, err, offline_meta)
+            self._update_job(slot_id, status="failed", error=err, total=total_tracks)
             return
 
         server_url = base_url.rstrip("/") if base_url else ""
@@ -943,7 +961,35 @@ class OfflineTranscodeManager:
 
         except Exception as e:
             logger.error("Error during offline transcode/upload for slot %s: %s", slot_id, e)
+            self._persist_job_failure(slot_id, str(e), offline_meta)
             self._update_job(slot_id, status="failed", error=str(e))
+        finally:
+            conn.close()
+
+    def _persist_job_failure(self, slot_id: str, error_msg: str, offline_meta: Optional[Dict[str, Any]] = None):
+        """Persists offline build failure state & message in SQLite so errors survive restarts and display in the Cards UI."""
+        conn = database.get_db_connection()
+        try:
+            meta: Dict[str, Any] = dict(offline_meta) if isinstance(offline_meta, dict) else {}
+            if not meta:
+                row = conn.execute("SELECT offline_meta FROM bridge_slots WHERE slot_id = ?;", (slot_id,)).fetchone()
+                if row and row[0]:
+                    try:
+                        parsed = json.loads(row[0])
+                        if isinstance(parsed, dict):
+                            meta = parsed
+                    except Exception:
+                        meta = {}
+            meta["status"] = "failed"
+            meta["error"] = str(error_msg or "Offline build failed")
+            meta["failed_at"] = time.time()
+            with conn:
+                conn.execute(
+                    "UPDATE bridge_slots SET offline_status = 'failed', offline_meta = ?, updated_at = CURRENT_TIMESTAMP WHERE slot_id = ?;",
+                    (json.dumps(meta), slot_id),
+                )
+        except Exception as db_err:
+            logger.debug("_persist_job_failure notice for %s: %s", slot_id, db_err)
         finally:
             conn.close()
 

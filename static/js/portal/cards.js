@@ -252,7 +252,18 @@ function createCardItemElement(slot, isProfile) {
 
   const transcodeJob = slot.transcode;
   let progressHtml = "";
-  if (transcodeJob && transcodeJob.status !== "ready") {
+  if (transcodeJob && transcodeJob.status === "failed") {
+    const errText = escapeHtml(transcodeJob.error || "Unknown offline build error");
+    progressHtml = `
+      <div style="margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <span style="font-size: 11px; font-weight: 600; color: #fca5a5;">❌ Offline build failed (${transcodeJob.done || 0}/${transcodeJob.total || 0} tracks)</span>
+          <button class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 8px; flex-shrink: 0;" onclick="retryCardSync('${escapeHtml(slot.slot_id)}')">🔄 Retry</button>
+        </div>
+        <div style="font-size: 11px; color: #fecaca; word-break: break-word;">${errText}</div>
+      </div>
+    `;
+  } else if (transcodeJob && transcodeJob.status !== "ready") {
     const pct = Math.round((transcodeJob.progress || 0) * 100);
     const curLabel = transcodeJob.current_title
       ? ` — Track ${transcodeJob.current_track || (transcodeJob.done + 1)}: ${escapeHtml(transcodeJob.current_title)}`
@@ -443,6 +454,22 @@ async function switchCardDeliveryMode(slotId, mode) {
     }
   } catch (err) {
     console.error("Mode switch error:", err);
+  }
+}
+
+async function retryCardSync(slotId) {
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(slotId)}/retry`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showToast("Retrying card build...", "info");
+      loadCards();
+    } else {
+      showToast(data.error || "Failed to retry card build.", "danger");
+    }
+  } catch (err) {
+    console.error("Card retry error:", err);
+    showToast("Network error retrying card build.", "danger");
   }
 }
 
