@@ -142,7 +142,7 @@ For local development and testing:
 
 ```bash
 git clone https://github.com/YotoStoryDeck/StoryDeck-Core.git
-cd core
+cd StoryDeck-Core
 python -m venv venv
 
 # Windows PowerShell:
@@ -161,6 +161,19 @@ Once running, StoryDeck Core will be available at `http://localhost:5055`:
 * **Household Sign-In:** `http://localhost:5055/login` *(supports SSO/OIDC and local accounts; `/admin/login` alias also supported)*
 * **Admin Dashboard:** `http://localhost:5055/admin` *(opens `/admin/setup` on first boot)*
 * **Tablet Kiosk:** `http://localhost:5055/kiosk/` *(Fully self-contained in `static/kiosk/` — zero external asset dependencies; runs edge-to-edge on iPads, Android tablets, Fire OS, and desktop browsers).*
+
+### Testing & Continuous Integration
+
+* **Synthetic unit suite (default, CI-safe):** Runs all 117 unit tests under `NetworkGuard` with an ephemeral SQLite DB, requiring zero local `data/broker.db`, credentials, or external servers:
+  ```bash
+  python scripts/run_tests.py --unit-only -v
+  ```
+* **Optional sanitized local DB snapshot suite:** Clones a local `data/broker.db` strictly read-only (`?mode=ro`) into temporary storage and scrubs all secrets, tokens, emails, and LAN IPs before running unit + snapshot validation (never mutating the source DB):
+  ```bash
+  python scripts/run_tests.py --with-local-db -v
+  ```
+* **GitHub Actions CI:** [ci.yml](.github/workflows/ci.yml) runs on every push and pull request to `main` and `dev`, validating Python 3.11 + `ffmpeg` against `--unit-only -v` and checking all frontend JavaScript (`static/kiosk/js/*.js`, `static/js/*.js`) with Node 24 `node --check`.
+* **Test Authoring & Architecture Guide:** See [tests/README.md](tests/README.md) for isolation rules, sanitization details, and test suite lessons learned.
 
 ---
 

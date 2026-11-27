@@ -114,7 +114,7 @@ The original flat `tests/test_*.py` suite suffered from chronic slowness (~83 se
 ### Lesson 1: Unmocked HTTP Retries Accounted for ~87% of Suite Runtime
 **Symptom:** Four unit files (`test_bridge_engine.py`, `test_user_abs_linking.py`, `test_refactor_standalone_fixes.py`, `test_card_pairing.py`) accounted for **72.3 seconds of an 82.95-second total runtime**.
 **Root Cause:** Production clients (`requests` + `urllib3.Retry`) silently retried DNS resolution failures against unreachable URLs like `http://audiobookshelf:80` or `http://127.0.0.1:13378` because HTTP was not blocked globally in tests.
-**Fix:** Installing `NetworkGuard` (`HTTPConnectionPool.urlopen` hook) immediately raises `NetworkBlockedInTestsError` on any unmocked HTTP call. Fixing the missing mocks cut the full unit suite runtime from ~83s down to **under 2 seconds**.
+**Fix:** Installing `NetworkGuard` (`HTTPConnectionPool.urlopen` hook) immediately raises `NetworkBlockedInTestsError` on any unmocked HTTP call. Fixing the missing mocks cut the full unit suite runtime from ~83s down to **~4–5 seconds on Linux CI (~14–16 seconds on Windows)**.
 
 ### Lesson 2: SQLite Read-Only Backup Protects Both Developers and Migrations
 **Symptom:** A legacy `STORYDECK_USE_LIVE_DB=1` toggle could point `database.DB_PATH` directly at `data/broker.db`, causing `database.init_db()` to mutate schema version (`PRAGMA user_version`) or wipe/seed test rows right in the live local DB.
@@ -139,3 +139,20 @@ The original flat `tests/test_*.py` suite suffered from chronic slowness (~83 se
 ### Lesson 7: Keep Test Suites Domain-Aligned and Standard-Library Clean
 **Symptom:** Phase-named test files (`test_phase2_...`, `test_phase3_...`, `test_refactor_standalone_fixes.py`) made it unclear which production module each test owned, and tests requiring non-installed third-party runners (`pytest`) broke contributors.
 **Fix:** Tests are grouped by production domain (`auth_rbac`, `curation_and_series`, `bridge_streaming_playback`, `portal_kiosk_and_player`, etc.) and written purely with Python standard library `unittest` + `unittest.mock`, matching `requirements.txt`.
+
+### Lesson 8: Enforce Target Python 3.11 Syntax & System Binaries (`ffmpeg`) in CI
+**Symptom:** Local tests on Python 3.12 passed, while GitHub Actions on Python 3.11 (`ubuntu-latest`) failed on two environment differences: (1) a PEP 701 backslash inside an f-string expression (`f"...{html.count(f'id=\"{x}\"')}"`) threw `SyntaxError` on Python 3.11 (and even bypassed Python 3.12's `ast.parse(..., feature_version=(3, 11))` check), and (2) `ffmpeg` is not preinstalled on `ubuntu-latest`, causing `test_03_ffmpeg_silencedetect_and_quiet_spots_snapping` in `tests/unit/test_bridge_offline_and_pruner.py` to fail.
+**Fix:** Bind intermediate strings/counts outside f-string `{...}` expressions (never embed backslashes or same-quote reuse inside f-string expressions), and explicitly install `ffmpeg` via `apt-get` in `.github/workflows/ci.yml` before invoking the unit test suite.
+
+---
+
+## 6. Continuous Integration (`.github/workflows/ci.yml`)
+
+Every push and pull request targeting `main` or `dev` executes the `unit-tests` job on `ubuntu-latest` using Node 24-native action majors (`actions/checkout@v7`, `actions/setup-python@v7`, `actions/setup-node@v7`):
+
+1. Sets up **Python 3.11** and installs dependencies from `requirements.txt`.
+2. Installs **`ffmpeg`** via `apt-get install -y --no-install-recommends ffmpeg` for real audio silence-detection coverage.
+3. Runs `python scripts/run_tests.py --unit-only -v` (117 synthetic unit tests, `NetworkGuard` enabled, zero local DB).
+4. Sets up **Node 24** (`node-version: "24"`) and runs `node --check` over every file in `static/kiosk/js/*.js` and `static/js/*.js`.
+
+*(Release packaging in `.github/workflows/release.yml` likewise uses Node 24-native action majors: `actions/checkout@v7`, `softprops/action-gh-release@v3`, `docker/setup-buildx-action@v4`, `docker/login-action@v4`, and `docker/build-push-action@v7`.)*
