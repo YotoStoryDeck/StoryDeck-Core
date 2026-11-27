@@ -120,7 +120,7 @@ Run StoryDeck Core directly using official container images from GitHub Containe
        # For latest stable production release:
        image: ghcr.io/yotostorydeck/storydeck-core:latest
        # For specific releases or dev builds, specify the tag:
-       # image: ghcr.io/yotostorydeck/storydeck-core:v1.1.0
+       # image: ghcr.io/yotostorydeck/storydeck-core:v0.2.0
        # image: ghcr.io/yotostorydeck/storydeck-core:dev
        container_name: storydeck-core
        restart: unless-stopped
