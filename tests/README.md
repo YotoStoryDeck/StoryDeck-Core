@@ -152,7 +152,8 @@ Every push and pull request targeting `main` or `dev` executes the `unit-tests` 
 
 1. Sets up **Python 3.11** and installs dependencies from `requirements.txt`.
 2. Installs **`ffmpeg`** via `apt-get install -y --no-install-recommends ffmpeg` for real audio silence-detection coverage.
-3. Runs `python scripts/run_tests.py --unit-only -v` (117 synthetic unit tests, `NetworkGuard` enabled, zero local DB).
+3. Runs `python scripts/run_tests.py --unit-only -v --json-report /tmp/unit_report.json` (117+ synthetic unit tests, `NetworkGuard` enabled, zero local DB).
 4. Sets up **Node 24** (`node-version: "24"`) and runs `node --check` over every file in `static/kiosk/js/*.js` and `static/js/*.js`.
+5. On any test or JS syntax failure (for pushes and same-repo PRs), `.github/scripts/post_ci_failure_comment.py` (with `permissions: contents: write`) mirrors the Markdown report to `$GITHUB_STEP_SUMMARY` and creates or updates a single `<!-- storydeck-ci-failure -->` commit comment on the triggering commit before failing the job.
 
 *(Release packaging in `.github/workflows/release.yml` likewise uses Node 24-native action majors: `actions/checkout@v7`, `softprops/action-gh-release@v3`, `docker/setup-buildx-action@v4`, `docker/login-action@v4`, and `docker/build-push-action@v7`.)*

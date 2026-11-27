@@ -10,6 +10,9 @@ on:
       - main
       - dev
 
+permissions:
+  contents: write
+
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
@@ -30,7 +33,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Run synthetic unit test suite
-        run: python scripts/run_tests.py --unit-only -v
+        id: unit_tests
+        continue-on-error: true
+        run: python scripts/run_tests.py --unit-only -v --json-report /tmp/unit_report.json
 
       - name: Set up Node 24 for JS syntax check
         uses: actions/setup-node@v7
@@ -38,8 +43,37 @@ jobs:
           node-version: "24"
 
       - name: Check frontend JavaScript syntax
+        id: js_check
+        continue-on-error: true
         run: |
+          status=0
+          : > /tmp/js_check.log
           for f in static/kiosk/js/*.js static/js/*.js; do
             echo "Checking $f"
-            node --check "$f"
+            if ! node --check "$f" 2>> /tmp/js_check.log; then
+              status=1
+            fi
           done
+          exit $status
+
+      - name: Post failure summary comment on triggering commit
+        if: >-
+          (steps.unit_tests.outcome != 'success' || steps.js_check.outcome != 'success')
+          && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python .github/scripts/post_ci_failure_comment.py \
+            --repo "${{ github.repository }}" \
+            --sha "${TARGET_SHA}" \
+            --branch "${{ github.ref_name }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --unit-outcome "${{ steps.unit_tests.outcome }}" \
+            --unit-report /tmp/unit_report.json \
+            --js-outcome "${{ steps.js_check.outcome }}" \
+            --js-log /tmp/js_check.log
+
+      - name: Fail job if any CI check failed
+        if: steps.unit_tests.outcome != 'success' || steps.js_check.outcome != 'success'
+        run: exit 1

@@ -1,6 +1,7 @@
 """Unified CLI runner for StoryDeck Core unit, snapshot, and live test suites."""
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -84,6 +85,12 @@ def parse_args(argv=None):
         "--verbose",
         action="store_true",
         help="Verbose test output.",
+    )
+    parser.add_argument(
+        "--json-report",
+        dest="json_report",
+        default=None,
+        help="Optional path to write a structured JSON summary of test results and tracebacks.",
     )
     return parser.parse_args(argv)
 
@@ -185,6 +192,25 @@ def main(argv=None):
     for mod, sec in sorted(result.module_times.items(), key=lambda kv: -kv[1]):
         print(f"  {sec:6.2f}s  {mod}")
     print("-" * 72)
+
+    if args.json_report:
+        report_path = Path(args.json_report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ok": result.wasSuccessful(),
+            "tests_run": result.testsRun,
+            "elapsed_sec": round(total, 3),
+            "skipped": len(result.skipped),
+            "failures": [
+                {"test": str(test), "kind": "FAIL", "traceback": tb}
+                for test, tb in result.failures
+            ],
+            "errors": [
+                {"test": str(test), "kind": "ERROR", "traceback": tb}
+                for test, tb in result.errors
+            ],
+        }
+        report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     if result.wasSuccessful():
         return 0
