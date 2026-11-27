@@ -49,6 +49,14 @@ const App = {
     document.addEventListener('fullscreenchange', () => {
       if (state.screen === 'grownups') this.render();
     });
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      if (state.screen !== 'screensaver') return;
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (state.screen === 'screensaver') ScreensaverScreen.tick();
+      }, 100);
+    }, { passive: true });
     this.bootstrap();
   },
   async acquireWakeLock() {

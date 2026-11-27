@@ -400,3 +400,44 @@
   font-variant-numeric: tabular-nums;
   user-select: none;
 }
+
+/* Responsive Large-Tablet & Portrait Kiosk Player Layout */
+body.kiosk-mode .npcover {
+  width: clamp(140px, 22vw, 240px);
+  height: auto;
+  aspect-ratio: 140 / 223;
+}
+
+body.kiosk-mode .npinfo .t {
+  font-size: clamp(22px, 3vw, 34px);
+}
+
+@media (orientation: portrait) {
+  body.kiosk-mode .npmid {
+    flex-direction: column;
+    justify-content: center;
+    gap: 18px;
+    text-align: center;
+  }
+
+  body.kiosk-mode .npcover {
+    width: clamp(140px, 36vw, 220px);
+  }
+
+  body.kiosk-mode .npinfo {
+    width: 100%;
+    max-width: 560px;
+    flex: 0 1 auto;
+  }
+
+  body.kiosk-mode .ctrls {
+    justify-content: center;
+  }
+
+  body.kiosk-mode .vol {
+    margin-left: 0;
+    width: 100%;
+    justify-content: center;
+    margin-top: 6px;
+  }
+}

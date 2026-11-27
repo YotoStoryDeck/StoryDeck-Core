@@ -1,11 +1,18 @@
 import { state } from './state.js';
 import { BrokerApi } from './broker-api.js';
+import { CatalogScreen } from './screens/catalog.js';
 import { handleGrownupsChange, handleGrownupsClick, bindGrownupsInputs } from './events_grownups.js';
 import { handlePlayerAction, bindPlayerScrubbing } from './events_player.js';
 
 export const eventsMixin = {
   bindEvents() {
     bindPlayerScrubbing(this);
+    this.container.addEventListener('input', (e) => {
+      if (e.target && e.target.id === 'kioskCatalogSearch') {
+        state.setSearchQuery(e.target.value);
+        CatalogScreen.updateSearchResultsInPlace();
+      }
+    });
     this.container.addEventListener('change', (e) => {
       handleGrownupsChange(this, e);
     });
@@ -66,6 +73,21 @@ export const eventsMixin = {
       if (tab && state.screen === 'catalog') {
         state.setActiveTab(tab.dataset.tab);
         this.render();
+        return;
+      }
+      // 3a. Catalog Search Clear & Source Filter Chips
+      const clearSearchBtn = e.target.closest('[data-act="clear-search"]');
+      if (clearSearchBtn && state.screen === 'catalog') {
+        state.setSearchQuery('');
+        const searchInput = this.container.querySelector('#kioskCatalogSearch');
+        if (searchInput) searchInput.value = '';
+        CatalogScreen.updateSearchResultsInPlace();
+        return;
+      }
+      const srcChipBtn = e.target.closest('[data-act="set-source-filter"]');
+      if (srcChipBtn && state.screen === 'catalog') {
+        state.setSourceFilter(srcChipBtn.dataset.src);
+        CatalogScreen.updateSearchResultsInPlace();
         return;
       }
       // 3b. Series Badge Jump from Detail Screen

@@ -26,10 +26,30 @@ import { Utils } from '../config.js';
 // Bit 0 = A, Bit 1 = B, Bit 2 = C, Bit 3 = D, Bit 4 = E, Bit 5 = F, Bit 6 = G
 const SEG_MAP = [0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F];
 
-// Heights matching firmware: 0: small 200px, 1: medium 260px, 2: large 320px
-const DIG_HEIGHTS = [200, 260, 320];
+// Relative height scales: 0: small, 1: medium, 2: large
+const DIG_SCALES = [0.58, 0.78, 1.0];
 
 export const ScreensaverScreen = {
+  getViewportDims() {
+    const appEl = typeof document !== 'undefined' ? document.getElementById('app') : null;
+    const availW = appEl?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 800) || 800;
+    const availH = appEl?.clientHeight || (typeof window !== 'undefined' ? window.innerHeight : 480) || 480;
+    return { availW, availH };
+  },
+
+  getDigitHeight(sizeIdx = 2) {
+    const { availW, availH } = this.getViewportDims();
+    const maxHByWidth = Math.floor((availW * 0.84) / 2.5);
+    const maxHByHeight = Math.floor(availH * 0.66);
+    const baseMax = Math.max(88, Math.min(420, maxHByWidth, maxHByHeight));
+    const clampedIdx = Math.max(0, Math.min(2, sizeIdx));
+    const scale = DIG_SCALES[clampedIdx] ?? 1.0;
+    return {
+      H: Math.max(80, Math.round(baseMax * scale)),
+      availW,
+      availH
+    };
+  },
   /**
    * Determine active clock color based on bedtime and wake time
    */
@@ -101,6 +121,7 @@ export const ScreensaverScreen = {
   _lastTimeKey: null,
   _lastColor: null,
   _lastSleepMin: null,
+  _lastDimKey: null,
 
   /**
    * Smooth in-place clock ticker:
@@ -153,21 +174,24 @@ export const ScreensaverScreen = {
       dateEl.textContent = now.toLocaleDateString('en-US', dateOptions);
     }
 
-    // 3. If minute hasn't changed, skip digit rebuilding completely!
-    if (this._lastTimeKey === timeKey) {
+    // 3. If minute and dimensions/size haven't changed, skip digit rebuilding completely!
+    const sizeIdx = Math.max(0, Math.min(2, state.parentSettings.clockSize ?? 2));
+    const { H, availW, availH } = this.getDigitHeight(sizeIdx);
+    const dimKey = `${availW}x${availH}:${sizeIdx}`;
+    if (this._lastTimeKey === timeKey && this._lastDimKey === dimKey) {
       return true;
     }
     this._lastTimeKey = timeKey;
+    this._lastDimKey = dimKey;
 
     // 4. Update digits in-place
     const container = el.querySelector('.saver-container');
     if (container) {
-      const sizeIdx = Math.max(0, Math.min(2, state.parentSettings.clockSize ?? 2));
-      const H = DIG_HEIGHTS[sizeIdx];
       const t = Math.max(4, Math.floor(H / 8));
       const W = Math.floor(H / 2);
       const gap = Math.floor(H / 16);
       const vlen = Math.floor((H - 3 * t) / 2);
+      container.style.gap = `${gap}px`;
 
       const h12 = ((hours + 11) % 12) + 1;
       const d0 = h12 >= 10 ? 1 : -2;
@@ -195,7 +219,7 @@ export const ScreensaverScreen = {
   render() {
     const { color, now } = this.getColorInfo();
     const sizeIdx = Math.max(0, Math.min(2, state.parentSettings.clockSize ?? 2));
-    const H = DIG_HEIGHTS[sizeIdx];
+    const { H, availW, availH } = this.getDigitHeight(sizeIdx);
     const t = Math.max(4, Math.floor(H / 8));
     const W = Math.floor(H / 2);
     const gap = Math.floor(H / 16);
@@ -205,6 +229,8 @@ export const ScreensaverScreen = {
     const rawHours = now.getHours();
     const hours = ((rawHours + 11) % 12) + 1;
     const minutes = now.getMinutes();
+    this._lastTimeKey = `${rawHours}:${minutes}`;
+    this._lastDimKey = `${availW}x${availH}:${sizeIdx}`;
 
     const d0 = hours >= 10 ? 1 : -2; // Blank leading digit for 1:00 - 9:59
     const d1 = hours % 10;

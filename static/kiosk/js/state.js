@@ -30,6 +30,8 @@ export const state = {
   activeDevice: null,
   isDevicePickerOpen: false,
   activeTab: 'all',  // 'all' | 'abs' | 'yoto' | 'series'
+  searchQuery: '',
+  sourceFilter: 'all', // 'all' | 'abs' | 'yoto'
   guActiveTab: 'sleep', // 'sleep' | 'target' | 'display' | 'network'
   card: null,           // Card currently active / playing on player
   previewCard: null,    // Card currently being inspected in detail view
@@ -95,6 +97,7 @@ export const state = {
     this.activeProfile = profile;
     this.activeDevice = this.resolveActiveDevice(profile);
     this.isDevicePickerOpen = false;
+    this.searchQuery = '';
   },
   setActiveDevice(device) {
     this.activeDevice = device;
@@ -149,6 +152,12 @@ export const state = {
   },
   setActiveTab(tab) {
     this.activeTab = tab;
+  },
+  setSearchQuery(q) {
+    this.searchQuery = String(q || '');
+  },
+  setSourceFilter(src) {
+    this.sourceFilter = (src === 'abs' || src === 'yoto') ? src : 'all';
   },
   setCard(card) {
     this.card = card;

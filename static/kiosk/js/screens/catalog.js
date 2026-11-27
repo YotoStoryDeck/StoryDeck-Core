@@ -95,11 +95,95 @@ export const CatalogScreen = {
     }
     return (t || '').replace(/^(the|a|an)\s+/i, '').trim().toLowerCase();
   },
-  renderSeriesView() {
+  getFilteredCatalog() {
+    const q = (state.searchQuery || '').trim().toLowerCase();
+    const src = state.sourceFilter || 'all';
+    return (state.catalog || []).filter(c => {
+      const itemSrc = (c.source === 'abs' || c.type === 'abs') ? 'abs' : 'yoto';
+      if (src !== 'all' && itemSrc !== src) return false;
+      if (!q) return true;
+      if ((c.title || '').toLowerCase().includes(q)) return true;
+      if ((c.author || '').toLowerCase().includes(q)) return true;
+      if ((c.series || '').toLowerCase().includes(q)) return true;
+      if (Array.isArray(c.series_list) && c.series_list.some(s => (s.name || '').toLowerCase().includes(q))) {
+        return true;
+      }
+      return false;
+    });
+  },
+  renderToolbar(matchCount) {
+    if ((state.activeTab !== 'all' && state.activeTab !== 'series') || !(state.catalog || []).length) {
+      return '';
+    }
+    const src = state.sourceFilter || 'all';
+    const q = state.searchQuery || '';
+    return `
+      <div class="catalog-toolbar">
+        <div class="catalog-search-wrap">
+          <span class="catalog-search-icon" aria-hidden="true">&#128269;</span>
+          <input id="kioskCatalogSearch" class="catalog-search-input" type="search" placeholder="Search books, authors, series..." value="${Utils.esc(q)}" autocomplete="off" spellcheck="false">
+          <button type="button" class="catalog-search-clear" data-act="clear-search" title="Clear search" style="${q ? '' : 'display:none;'}">&#10005;</button>
+        </div>
+        <div class="catalog-filter-chips">
+          <button type="button" class="src-chip ${src === 'all' ? 'active' : ''}" data-act="set-source-filter" data-src="all">All</button>
+          <button type="button" class="src-chip ${src === 'abs' ? 'active' : ''}" data-act="set-source-filter" data-src="abs">ABS</button>
+          <button type="button" class="src-chip ${src === 'yoto' ? 'active' : ''}" data-act="set-source-filter" data-src="yoto">Yoto</button>
+        </div>
+        <span class="catalog-count">${matchCount} ${matchCount === 1 ? 'book' : 'books'}</span>
+      </div>
+    `;
+  },
+  renderAllGridItems(items) {
+    const list = [...(items || [])];
+    const sorted = (typeof window !== 'undefined' && window.StoryDeckSeries)
+      ? window.StoryDeckSeries.sortItems(list, { sortBy: 'name', highlightsFirst: true })
+      : list.sort((a, b) => {
+          if (!!b.is_highlight !== !!a.is_highlight) return b.is_highlight ? 1 : -1;
+          return this.cleanTitle(a.title).localeCompare(this.cleanTitle(b.title));
+        });
+    const tiles = sorted.map(c => `
+      <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
+        <img loading="lazy" decoding="async" src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
+        ${(c.is_highlight && state.activeTab === 'all') ? '<span class="badge-star" title="Highlighted">★</span>' : ''}
+        ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
+      </div>
+    `).join('');
+    if (tiles.length) return tiles;
+    const msg = (state.catalog || []).length
+      ? 'No audiobooks match your search or filter.'
+      : 'No audiobooks found in this library.';
+    return `<div style="padding:40px; color:#888; text-align:center; grid-column:1/-1;">${msg}</div>`;
+  },
+  updateSearchResultsInPlace() {
+    const appEl = typeof document !== 'undefined' ? document.getElementById('app') : null;
+    if (!appEl || state.screen !== 'catalog') return;
+    const filtered = this.getFilteredCatalog();
+    if (state.activeTab === 'series') {
+      const seriesEl = appEl.querySelector('.grid-series');
+      if (seriesEl) seriesEl.innerHTML = this.renderSeriesView(filtered);
+    } else if (state.activeTab === 'all') {
+      const gridEl = appEl.querySelector('.grid');
+      if (gridEl) gridEl.innerHTML = this.renderAllGridItems(filtered);
+    }
+    const countEl = appEl.querySelector('.catalog-count');
+    if (countEl) {
+      countEl.textContent = `${filtered.length} ${filtered.length === 1 ? 'book' : 'books'}`;
+    }
+    const clearBtn = appEl.querySelector('.catalog-search-clear');
+    if (clearBtn) {
+      clearBtn.style.display = state.searchQuery ? '' : 'none';
+    }
+    const activeSrc = state.sourceFilter || 'all';
+    appEl.querySelectorAll('.src-chip[data-act="set-source-filter"]').forEach(chip => {
+      chip.classList.toggle('active', chip.dataset.src === activeSrc);
+    });
+  },
+  renderSeriesView(items = null) {
     const sharedSeries = (typeof window !== 'undefined' && window.StoryDeckSeries) ? window.StoryDeckSeries : null;
     // Group books by series name, supporting cards belonging to multiple series/groups
     const groups = new Map();
-    state.catalog.forEach(item => {
+    const sourceItems = items || state.catalog || [];
+    sourceItems.forEach(item => {
       const seriesEntries = sharedSeries
         ? sharedSeries.extractItemSeriesList(item)
         : ((item.series_list && item.series_list.length > 0)
@@ -202,10 +286,12 @@ export const CatalogScreen = {
   },
   render() {
     if (state.activeTab === 'series') {
+      const filteredSeries = this.getFilteredCatalog();
       return `
         ${this.renderTopNav()}
+        ${this.renderToolbar(filteredSeries.length)}
         <div class="grid-series">
-          ${this.renderSeriesView()}
+          ${this.renderSeriesView(filteredSeries)}
         </div>
         ${PlayerScreen.renderNowbar()}
       `;
@@ -230,28 +316,12 @@ export const CatalogScreen = {
         ${PlayerScreen.renderNowbar()}
       `;
     }
-    const filtered = state.catalog.filter(c => {
-      if (state.activeTab === 'abs') return c.source === 'abs' || c.type === 'abs';
-      if (state.activeTab === 'yoto') return c.source === 'yoto' || c.type === 'yoto';
-      return true;
-    });
-    const sorted = (typeof window !== 'undefined' && window.StoryDeckSeries)
-      ? window.StoryDeckSeries.sortItems(filtered, { sortBy: 'name', highlightsFirst: true })
-      : filtered.sort((a, b) => {
-          if (!!b.is_highlight !== !!a.is_highlight) return b.is_highlight ? 1 : -1;
-          return this.cleanTitle(a.title).localeCompare(this.cleanTitle(b.title));
-        });
-    const tiles = sorted.map(c => `
-      <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
-        <img loading="lazy" decoding="async" src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
-        ${(c.is_highlight && state.activeTab === 'all') ? '<span class="badge-star" title="Highlighted">★</span>' : ''}
-        ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
-      </div>
-    `).join('');
+    const filtered = this.getFilteredCatalog();
     return `
       ${this.renderTopNav()}
+      ${this.renderToolbar(filtered.length)}
       <div class="grid">
-        ${tiles.length ? tiles : '<div style="padding:40px; color:#888; text-align:center;">No audiobooks found in this library.</div>'}
+        ${this.renderAllGridItems(filtered)}
       </div>
       ${PlayerScreen.renderNowbar()}
     `;
