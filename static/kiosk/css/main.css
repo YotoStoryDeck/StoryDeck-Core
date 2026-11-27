@@ -16,6 +16,7 @@
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
+  touch-action: manipulation;
 }
 
 body {
@@ -94,10 +95,27 @@ body.kiosk-mode .frame {
 }
 
 /* Fluid Touch Layout Adjustments for Kiosk / Tablet Displays */
-body.kiosk-mode .grid {
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+body.kiosk-mode .grid,
+body.kiosk-custom-res .grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(128px, 14vw, 175px), 1fr));
   gap: 16px;
   padding: 16px;
+  align-content: flex-start;
+}
+
+body.kiosk-mode .grid .tile,
+body.kiosk-custom-res .grid .tile {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 122 / 193;
+}
+
+body.kiosk-mode .series-row .tile,
+body.kiosk-custom-res .series-row .tile {
+  width: clamp(122px, 13vw, 160px);
+  height: auto;
+  aspect-ratio: 122 / 193;
 }
 
 body.kiosk-mode .nowbar {
@@ -130,12 +148,6 @@ body.kiosk-custom-res .note {
 body.kiosk-custom-res .frame {
   border-radius: 0 !important;
   box-shadow: none !important;
-}
-
-body.kiosk-custom-res .grid {
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 16px;
-  padding: 16px;
 }
 
 body.kiosk-custom-res .nowbar {

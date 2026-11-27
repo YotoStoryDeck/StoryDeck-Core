@@ -29,6 +29,17 @@ const App = {
     this.bindEvents();
     this.startSleepTimerTicker();
     this.startInactivityTracker();
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && !state.isOffline && state.isApproved !== false) {
+        const prevScreen = state.screen;
+        BrokerApi.getDeviceConfig()
+          .then(() => {
+            this.syncActiveDevicePlayback();
+            this.updateLiveTelemetryUI(prevScreen);
+          })
+          .catch(() => {});
+      }
+    });
     this.bootstrap();
   },
   applyDisplayBrightness() {
@@ -161,20 +172,31 @@ Are you sure you want to start audio playback on this remote player?`);
         restoredEl.scrollLeft = savedScrollLeft;
       }
     }
+    const renderedNowbar = this.container.querySelector('.nowbar');
+    this._lastNowbarHtml = renderedNowbar ? renderedNowbar.outerHTML : null;
   },
   async selectProfile(profileId) {
     const p = state.profiles.find(x => x.id === profileId);
     if (!p) return;
     state.setActiveProfile(p);
+    const cached = BrokerApi.getCachedCatalog(p.id, state.activeDevice?.id);
+    const prevFp = cached ? cached.map(c => `${c.id}:${c.last_played_at || ''}`).join(',') : '';
+    if (cached) {
+      state.catalog = cached;
+      this.syncActiveDevicePlayback();
+    }
     state.setScreen('catalog');
     this.render();
-    // Fetch dynamic live catalog for selected profile
+    // Fetch dynamic live catalog for selected profile (stale-while-revalidate when cached)
     try {
-      await BrokerApi.fetchLiveCatalog(p.id, state.activeDevice?.id);
-      
-      // Auto-bind active player's playback state to the Nowbar
+      const fresh = await BrokerApi.fetchLiveCatalog(p.id, state.activeDevice?.id);
+      const nextFp = (fresh || []).map(c => `${c.id}:${c.last_played_at || ''}`).join(',');
       this.syncActiveDevicePlayback();
-      this.render();
+      if (!cached || nextFp !== prevFp) {
+        this.render();
+      } else {
+        this.updateLiveTelemetryUI(state.screen);
+      }
     } catch (e) {
       console.error('Failed to load profile catalog:', e);
     }
@@ -221,13 +243,56 @@ Are you sure you want to start audio playback on this remote player?`);
       }
     }
   },
+  updateLiveTelemetryUI(prevScreen) {
+    if (!this.container) return;
+    if (state.screen !== prevScreen) {
+      this._lastNowbarHtml = null;
+      this.render();
+      return;
+    }
+    if (state.screen === 'now') {
+      if (!PlayerScreen.tick()) {
+        this.render();
+      }
+      return;
+    }
+    if (state.screen === 'catalog' || state.screen === 'detail') {
+      const nowbarEl = this.container.querySelector('.nowbar');
+      const nextNowbarHtml = PlayerScreen.renderNowbar();
+      if (nowbarEl && this._lastNowbarHtml !== nextNowbarHtml) {
+        nowbarEl.outerHTML = nextNowbarHtml;
+        this._lastNowbarHtml = nextNowbarHtml;
+      } else if (!nowbarEl) {
+        this.render();
+      }
+      if (state.screen === 'catalog') {
+        const dev = state.activeDevice;
+        const _ui = (typeof window !== 'undefined' && window.StoryDeckUI) ? window.StoryDeckUI : null;
+        const meta = _ui ? _ui.getDeviceStatusMeta(dev) : {
+          isAway: Boolean(dev && dev.online && dev.is_home === false),
+          icon: (dev && dev.online && dev.is_home === false) ? '✈️' : (dev?.is_playing ? '▶' : (dev?.online ? '●' : '○')),
+          statusClass: (dev && dev.online && dev.is_home === false) ? 'status-away' : (dev?.is_playing ? 'status-playing' : (dev?.online ? 'status-online' : 'status-offline')),
+        };
+        const dotEl = this.container.querySelector('.device-pill .device-dot');
+        const labelEl = this.container.querySelector('.device-pill .device-label');
+        if (dotEl) {
+          dotEl.className = `device-dot ${meta.statusClass}`;
+          dotEl.textContent = meta.icon;
+        }
+        if (labelEl && dev?.name) {
+          labelEl.textContent = dev.name;
+        }
+      }
+    }
+  },
   /**
-   * Continuous background health & telemetry monitor (every 5s)
+   * Continuous background health & telemetry monitor (every 5s, paused when hidden)
    */
   startHealthMonitor() {
     if (this._healthTimer) return;
     this._healthTimer = setInterval(async () => {
-      if (state.isOffline) return; // Managed by _pingTimer
+      if (state.isOffline || (typeof document !== 'undefined' && document.hidden)) return;
+      const prevScreen = state.screen;
       try {
         await BrokerApi.getDeviceConfig();
         if (state.isApproved === false) {
@@ -236,9 +301,7 @@ Are you sure you want to start audio playback on this remote player?`);
           return;
         }
         this.syncActiveDevicePlayback();
-        if (state.screen === 'catalog' || state.screen === 'detail' || state.screen === 'now') {
-          this.render();
-        }
+        this.updateLiveTelemetryUI(prevScreen);
       } catch (err) {
         if (state.isApproved === false) {
           this.enterQuarantineState();

@@ -5,6 +5,19 @@ import { state } from './state.js';
  * Handles device announcement, token rotation, profile discovery, and catalog fetching.
  */
 export const BrokerApi = {
+  _catalogCache: new Map(),
+  _chaptersById: new Map(),
+
+  _catalogCacheKey(profileId = null, deviceId = null) {
+    const isStandalone = state.mode === 'standalone' || !profileId;
+    const targetKey = isStandalone ? '__all__' : String(profileId).toLowerCase();
+    const devParam = String(deviceId || state.activeDevice?.id || '').trim().toLowerCase();
+    return `${targetKey}|${devParam}`;
+  },
+
+  getCachedCatalog(profileId = null, deviceId = null) {
+    return this._catalogCache.get(this._catalogCacheKey(profileId, deviceId)) || null;
+  },
     /**
    * Fast health probe ping to check if broker is online
    */
@@ -188,7 +201,19 @@ export const BrokerApi = {
       const res = await this._authedFetch(`${CONFIG.BROKER_BASE}/api/media/${encodeURIComponent(mediaId)}/tracks`);
       if (!res.ok) return null;
       const data = await res.json();
-      return (data && data.tracks) ? data.tracks : [];
+      const tracks = (data && data.tracks) ? data.tracks : [];
+      if (tracks.length > 0) {
+        const chapters = tracks.map(t => ({
+          key: t.key || '',
+          track_key: t.track_key || t.key || '',
+          title: t.title,
+          duration: t.duration_seconds || 0,
+          icon_url: t.icon_url
+        }));
+        const duration = tracks.reduce((sum, t) => sum + (t.duration_seconds || 0), 0);
+        this._chaptersById.set(String(mediaId), { chapters, duration });
+      }
+      return tracks;
     } catch (e) {
       console.warn(`Failed to fetch tracks for ${mediaId}:`, e);
       return [];
@@ -202,17 +227,29 @@ export const BrokerApi = {
       ? `client=kiosk&device_id=${encodeURIComponent(devParam)}`
       : 'client=kiosk';
 
-    const absPromise = this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/abs?${qs}`)
-      .then(r => r.ok ? r.json() : [])
-      .catch(() => []);
-    const yotoPromise = this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/yoto?${qs}`)
-      .then(r => r.ok ? r.json() : [])
-      .catch(() => []);
-    const [absItems, yotoItems] = await Promise.all([absPromise, yotoPromise]);
+    let absItems = [];
+    let yotoItems = [];
+    const combinedRes = await this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/catalog?${qs}`)
+      .catch(() => null);
+    if (combinedRes && combinedRes.ok) {
+      const payload = await combinedRes.json().catch(() => ({}));
+      absItems = payload.abs || [];
+      yotoItems = payload.yoto || [];
+    } else {
+      const absPromise = this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/abs?${qs}`)
+        .then(r => r.ok ? r.json() : [])
+        .catch(() => []);
+      const yotoPromise = this._authedFetch(`${CONFIG.BROKER_BASE}/api/kids/${targetKey}/yoto?${qs}`)
+        .then(r => r.ok ? r.json() : [])
+        .catch(() => []);
+      [absItems, yotoItems] = await Promise.all([absPromise, yotoPromise]);
+    }
     const combined = [];
     (absItems || []).forEach(b => {
       const thumb = b.thumb || b.cover_url || b.cover;
       const coverUrl = thumb ? (thumb.startsWith('http') ? thumb : `${CONFIG.BROKER_BASE}${thumb}`) : null;
+      const cachedCh = this._chaptersById.get(String(b.id));
+      const mappedCh = (b.chapters || []).map(ch => ({ title: ch.title, duration: (ch.end && ch.start) ? (ch.end - ch.start) : (ch.duration || 0) }));
       combined.push({
         id: b.id,
         title: b.title,
@@ -222,8 +259,8 @@ export const BrokerApi = {
         has_physical: !!b.has_physical,
         last_played_at: b.last_played_at || '',
         daily: !!b.daily,
-        duration: b.duration,
-        chapters: (b.chapters || []).map(ch => ({ title: ch.title, duration: (ch.end && ch.start) ? (ch.end - ch.start) : (ch.duration || 0) })),
+        duration: b.duration || (cachedCh ? cachedCh.duration : 0),
+        chapters: mappedCh.length ? mappedCh : (cachedCh ? cachedCh.chapters : []),
         source: 'abs',
         series: b.series || '',
         sequence: b.sequence != null ? b.sequence : null,
@@ -234,8 +271,11 @@ export const BrokerApi = {
     (yotoItems || []).forEach(y => {
       const thumb = y.thumb || y.cover_url || y.cover;
       const coverUrl = thumb ? (thumb.startsWith('http') ? thumb : `${CONFIG.BROKER_BASE}${thumb}`) : null;
+      const yid = y.card_id || y.id;
+      const cachedCh = this._chaptersById.get(String(yid));
+      const mappedCh = (y.chapters || []).map(ch => ({ title: ch.title, duration: ch.duration || 0 }));
       combined.push({
-        id: y.card_id || y.id,
+        id: yid,
         title: y.title,
         author: y.author || 'Yoto',
         cover: coverUrl,
@@ -244,8 +284,8 @@ export const BrokerApi = {
         has_physical: !!y.has_physical,
         last_played_at: y.last_played_at || '',
         daily: !!y.daily,
-        duration: y.duration,
-        chapters: (y.chapters || []).map(ch => ({ title: ch.title, duration: ch.duration || 0 })),
+        duration: y.duration || (cachedCh ? cachedCh.duration : 0),
+        chapters: mappedCh.length ? mappedCh : (cachedCh ? cachedCh.chapters : []),
         source: 'yoto',
         series: y.series || '',
         sequence: y.sequence != null ? y.sequence : null,
@@ -263,6 +303,7 @@ export const BrokerApi = {
           return cleanA.localeCompare(cleanB);
         });
     state.catalog = sorted;
+    this._catalogCache.set(this._catalogCacheKey(profileId, deviceId), sorted);
     return sorted;
   },
   /**

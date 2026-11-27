@@ -40,7 +40,7 @@ export const DetailScreen = {
       <div class="back" data-go="catalog">&#8592;</div>
       <div class="d">
         <div class="dleft">
-          <img class="dcover" src="${Utils.esc(c.cover || c.img)}">
+          <img class="dcover" decoding="async" src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
           <button class="playbtn" data-act="playstart" id="btn-play-book">${isCurrentlyPlayingThis ? '&#9646;&#9646; Now Playing' : '&#9654; Play Book'}</button>
         </div>
         <div class="dright">

@@ -116,11 +116,21 @@ export function handleGrownupsClick(app, e) {
     app.render();
     return;
   }
-  // Grown-ups Restart Action
+  // Grown-ups Restart Action (non-blocking two-tap confirm)
   const guRestartBtn = e.target.closest('[data-act="gu-restart"]');
   if (guRestartBtn) {
-    if (confirm("Restart this controller?")) {
+    if (guRestartBtn.dataset.confirmPending === '1') {
       window.location.reload();
+    } else {
+      guRestartBtn.dataset.confirmPending = '1';
+      guRestartBtn.dataset.origLabel = guRestartBtn.innerHTML;
+      guRestartBtn.innerHTML = '&#9888;&#65039; Tap again to restart';
+      setTimeout(() => {
+        if (guRestartBtn && guRestartBtn.dataset.confirmPending === '1') {
+          delete guRestartBtn.dataset.confirmPending;
+          guRestartBtn.innerHTML = guRestartBtn.dataset.origLabel || '&#128260; Restart Device';
+        }
+      }, 4000);
     }
     return;
   }

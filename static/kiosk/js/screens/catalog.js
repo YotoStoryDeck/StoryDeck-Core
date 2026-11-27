@@ -181,7 +181,7 @@ export const CatalogScreen = {
         }
         return `
           <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
-            <img src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
+            <img loading="lazy" decoding="async" src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
             ${seqLabel ? `<span class="badge-seq">${Utils.esc(seqLabel)}</span>` : ''}
             ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
           </div>
@@ -218,7 +218,7 @@ export const CatalogScreen = {
       });
       const tiles = recentItems.slice(0, 24).map(c => `
         <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
-          <img src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
+          <img loading="lazy" decoding="async" src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
           ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
         </div>
       `).join('');
@@ -243,7 +243,7 @@ export const CatalogScreen = {
         });
     const tiles = sorted.map(c => `
       <div class="tile" data-card="${Utils.esc(c.id || c.cardId)}" title="${Utils.esc(c.title)}">
-        <img src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
+        <img loading="lazy" decoding="async" src="${Utils.esc(c.cover || c.img || '/static/img/placeholder.png')}" onerror="this.onerror=null;this.src='/static/img/placeholder.png'">
         ${(c.is_highlight && state.activeTab === 'all') ? '<span class="badge-star" title="Highlighted">★</span>' : ''}
         ${c.source === 'abs' || c.type === 'abs' ? '<span class="badge-abs">ABS</span>' : '<span class="badge-yoto">YOTO</span>'}
       </div>

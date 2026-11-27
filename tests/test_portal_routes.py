@@ -367,6 +367,63 @@ class TestPortalRoutes(unittest.TestCase):
         self.assertTrue(den_yoto["kiosk_card_b"]["last_played_at"])
         self.assertEqual(den_abs["kiosk_book_a"]["last_played_at"], "")
 
+    def test_kiosk_combined_catalog_and_sleep_timer_forwarding(self):
+        """Verifies GET /api/kids/<child>/catalog single-request endpoint and POST /api/player/control sleep_timer forwarding."""
+        conn = database.get_db_connection()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO media_items (id, type, title, author, raw_metadata) VALUES (?, ?, ?, ?, ?);",
+                    ("comb_abs_1", "abs", "Combined ABS Book", "Author X", "{}"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO media_items (id, type, title, author, raw_metadata) VALUES (?, ?, ?, ?, ?);",
+                    ("comb_yoto_1", "yoto", "Combined Yoto Card", "Yoto", "{}"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO profile_media_permissions (profile_id, media_id, permission) VALUES (?, ?, 'allowed');",
+                    ("portal_child", "comb_abs_1"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO profile_media_permissions (profile_id, media_id, permission) VALUES (?, ?, 'allowed');",
+                    ("portal_child", "comb_yoto_1"),
+                )
+        finally:
+            conn.close()
+
+        with self.app.session_transaction() as sess:
+            sess["user_id"] = "test_admin_kiosk2"
+            sess["username"] = "test_admin_kiosk2"
+            sess["role"] = "admin"
+
+        res_prof = self.app.get("/api/kids/portal_child/catalog?client=kiosk")
+        self.assertEqual(res_prof.status_code, 200)
+        p_data = res_prof.get_json()
+        self.assertTrue(any(x["id"] == "comb_abs_1" for x in p_data["abs"]))
+        self.assertTrue(any(x["id"] == "comb_yoto_1" for x in p_data["yoto"]))
+
+        res_all = self.app.get("/api/kids/__all__/catalog?client=kiosk&device_id=player_bedside")
+        self.assertEqual(res_all.status_code, 200)
+        a_data = res_all.get_json()
+        self.assertIn("abs", a_data)
+        self.assertIn("yoto", a_data)
+
+        with patch("core.player_service.dispatch_player_control", return_value=(True, {"ok": True, "minutes": 30}, 200)) as mock_ctl:
+            res_ctl = self.app.post("/api/player/control", json={
+                "device_id": "player_bedside",
+                "action": "sleep_timer",
+                "minutes": 30,
+            })
+            self.assertEqual(res_ctl.status_code, 200)
+            mock_ctl.assert_called_once_with(
+                "player_bedside",
+                "sleep_timer",
+                volume=None,
+                minutes=30,
+                position=None,
+                speed=None,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
