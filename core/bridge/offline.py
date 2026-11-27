@@ -712,6 +712,8 @@ class OfflineTranscodeManager(OfflinePlannerMixin, OfflineSyncMixin):
                 cover_url=cover_url,
                 description=f"Offline audiobook ({mode_desc}): {slot.get('title', '')} by {slot.get('author', '')}",
             )
+            if not saved_cid:
+                raise RuntimeError("Failed to save final offline playlist to Yoto Cloud")
 
             if not _is_current_gen():
                 return

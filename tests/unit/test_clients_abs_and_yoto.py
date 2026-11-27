@@ -1,11 +1,15 @@
 """Unit tests for Yoto Cloud OAuth PKCE flow and ABS/Yoto client modules (zero network calls)."""
+import time
 import unittest
 from unittest.mock import MagicMock, patch
+
+import requests
 
 from tests.harness import IsolatedTestCase
 from app import app
 import clients
 from clients.abs_client import ABSClient
+from clients.yoto_client import YotoClient
 import database
 import routes.yoto_oauth as yoto_oauth
 
@@ -225,6 +229,78 @@ class TestABSClientScopingUnit(IsolatedTestCase):
         self.assertEqual(len(scoped), 1)
         self.assertEqual(scoped[0]["id"], "b1")
         self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer child_scoped_tok")
+
+
+class TestYotoClientUploadResilience(IsolatedTestCase):
+    def _make_client(self):
+        cli = YotoClient(client_id="cid_test", refresh_token="ref_test")
+        cli.access_token = "tok_initial"
+        cli.expires_at = time.time() + 3600.0
+        return cli
+
+    def test_01_upload_audio_survives_transient_dns_error_during_transcode_poll(self):
+        """Transient ConnectionError (DNS failure) during /transcoded polling retries cleanly without aborting upload."""
+        cli = self._make_client()
+        upload_url_resp = MagicMock(status_code=200)
+        upload_url_resp.json.return_value = {"upload": {"uploadUrl": "https://s3.test/put", "uploadId": "up_1"}}
+        put_resp = MagicMock(status_code=200)
+        poll_ok = MagicMock(status_code=200)
+        poll_ok.json.return_value = {
+            "transcode": {
+                "transcodedSha256": "deadbeef1234567890abcdef12345678",
+                "transcodedInfo": {"duration": 1800.0, "fileSize": 14400000, "channels": "mono", "format": "mp3"},
+            }
+        }
+        dns_err = requests.exceptions.ConnectionError(
+            "Failed to resolve 'api.yotoplay.com' ([Errno -5] No address associated with hostname)"
+        )
+
+        with patch("clients.yoto.playlists.requests.get", side_effect=[upload_url_resp, dns_err, dns_err, poll_ok]) as mock_get, \
+             patch("clients.yoto.playlists.requests.put", return_value=put_resp) as mock_put, \
+             patch("clients.yoto.playlists.time.sleep"):
+            result = cli.upload_audio(b"ID3" + b"\x00" * 64, title="Castle Mystery Part 3")
+
+        self.assertEqual(result["sha"], "deadbeef1234567890abcdef12345678")
+        self.assertEqual(result["duration"], 1800.0)
+        self.assertEqual(mock_put.call_count, 1)
+        self.assertEqual(mock_get.call_count, 4)
+
+    def test_02_upload_audio_retries_upload_url_put_and_401_refresh(self):
+        """upload_audio recovers from transient uploadUrl ConnectionError, 503 S3 PUT, and 401 token expiry mid-poll."""
+        cli = self._make_client()
+        dns_err = requests.exceptions.ConnectionError("temporary DNS failure")
+        upload_url_ok = MagicMock(status_code=200)
+        upload_url_ok.json.return_value = {"upload": {"uploadUrl": "https://s3.test/put2", "uploadId": "up_2"}}
+        put_503 = MagicMock(status_code=503, text="SlowDown")
+        put_ok = MagicMock(status_code=200)
+        poll_401 = MagicMock(status_code=401)
+        poll_ok = MagicMock(status_code=200)
+        poll_ok.json.return_value = {"transcode": {"transcodedSha256": "sha_after_refresh_1234567890"}}
+
+        with patch.object(cli, "get_token", side_effect=["tok_initial", "tok_refreshed"]) as mock_tok, \
+             patch("clients.yoto.playlists.requests.get", side_effect=[dns_err, upload_url_ok, poll_401, poll_ok]), \
+             patch("clients.yoto.playlists.requests.put", side_effect=[put_503, put_ok]) as mock_put, \
+             patch("clients.yoto.playlists.time.sleep"):
+            result = cli.upload_audio(b"MP3BYTES", title="Track Recovery")
+
+        self.assertEqual(result["sha"], "sha_after_refresh_1234567890")
+        self.assertEqual(mock_put.call_count, 2)
+        self.assertEqual(mock_tok.call_count, 2)
+        self.assertTrue(mock_tok.call_args_list[1].kwargs.get("force_refresh"))
+
+    def test_03_save_track_playlist_retries_on_transient_network_error(self):
+        """save_track_playlist retries transient RequestException/5xx on POST /content and returns cardId."""
+        cli = self._make_client()
+        post_ok = MagicMock(status_code=200)
+        post_ok.json.return_value = {"card": {"cardId": "AbCdE"}}
+        tracks = [{"track_idx": 1, "title": "Ch 1", "sha": "sha1", "duration": 60.0, "fileSize": 1000}]
+
+        with patch("clients.yoto.playlists.requests.post", side_effect=[requests.exceptions.ConnectionError("dns blip"), post_ok]) as mock_post, \
+             patch("clients.yoto.playlists.time.sleep"):
+            cid = cli.save_track_playlist("Mystery Series", tracks, card_id="AbCdE")
+
+        self.assertEqual(cid, "AbCdE")
+        self.assertEqual(mock_post.call_count, 2)
 
 
 if __name__ == "__main__":
