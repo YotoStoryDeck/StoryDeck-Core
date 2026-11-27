@@ -1,0 +1,229 @@
+  <!-- ======================================================================= -->
+  <!-- MODALS                                                                  -->
+  <!-- ======================================================================= -->
+
+  <!-- Book Assign / Play Modal -->
+  <div class="modal-overlay" id="bookModal" style="display: none;">
+    <div class="modal-card" style="max-width: 440px;">
+      <div class="modal-header">
+        <h3 style="font-size: 16px; margin: 0;" id="bookModalTitle">Select Delivery &amp; Play</h3>
+      </div>
+      <div style="display: flex; gap: 14px; margin: 14px 0;">
+        <div
+          style="width: 100px; height: 100px; border-radius: 8px; overflow: hidden; background: var(--bg-surface-elevated); flex-shrink: 0;">
+          <img id="bookModalThumb" src="" style="width: 100%; height: 100%; object-fit: cover;">
+        </div>
+        <div style="flex: 1; min-width: 0;">
+          <h4 id="bookModalBookTitle" style="font-size: 14px; margin-bottom: 4px;"></h4>
+          <p id="bookModalAuthor" class="text-secondary" style="font-size: 12px; margin-bottom: 4px;"></p>
+          <span id="bookModalSeries" class="badge badge-info" style="font-size: 10px; display: none;"></span>
+          <span id="bookModalDurationBadge" class="badge badge-subtle"
+            style="font-size: 10px; display: none; margin-left: 4px;"></span>
+        </div>
+      </div>
+
+      <!-- Book Synopsis -->
+      <div id="bookModalSynopsisContainer"
+        style="display: none; margin-bottom: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px 10px; max-height: 85px; overflow-y: auto;">
+        <p id="bookModalSynopsis" style="font-size: 11px; color: var(--text-secondary); margin: 0; line-height: 1.4;">
+        </p>
+      </div>
+
+      <!-- Starting Chapter Selector -->
+      <div class="form-group" style="margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px;">
+          <label for="bookModalChapterSelect" style="font-size: 12px; font-weight: 600; margin: 0;">Start Chapter / Track</label>
+          <span id="bookModalProgressHint" class="badge badge-info" style="font-size: 10px; display: none;"></span>
+        </div>
+        <select id="bookModalChapterSelect" class="form-control">
+          <option value="1">Chapter 1</option>
+        </select>
+      </div>
+
+      <!-- Delivery Mode Selector Dropdown -->
+      <div class="form-group" id="bookModalDeliveryGroup" style="margin-bottom: 12px;">
+        <label for="bookModalModeSelect" style="font-size: 12px; font-weight: 600;">Delivery Mode</label>
+        <select id="bookModalModeSelect" class="form-control" onchange="onBookModalSeriesToggle()">
+          <option value="default">⚙️ Profile Default (<span id="optProfileDefaultMode">Streaming</span>)</option>
+          <option value="streaming">⚡ Streaming (Instant Playback)</option>
+          <option value="offline_next">⏱️ Offline — Next 5 Hours (Rolling Window from Resume Point)</option>
+          <option value="offline_book">💾 Offline — Whole Book (&le; 99 Tracks)</option>
+          <option value="offline_series">📚 Offline — Whole Series (&le; 100 Tracks)</option>
+        </select>
+        <small class="text-secondary" style="font-size: 10px; display: block; margin-top: 4px;">
+          Offline modes upload tracks to Yoto Cloud (playing finished tracks offline while remaining tracks stream live).
+        </small>
+      </div>
+
+      <!-- Series Chaining Option -->
+      <div id="bookModalFollowSeriesWrap"
+        style="display: none; margin-bottom: 12px; padding: 8px 10px; border-radius: 8px; background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.28);">
+        <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 12px; margin: 0;">
+          <input type="checkbox" id="bookModalFollowSeries" style="margin-top: 2px;" onchange="onBookModalSeriesToggle()">
+          <span id="bookModalFollowSeriesLabel">📚 Follow entire series in order on this card (auto-advances to next book)</span>
+        </label>
+        <div id="bookModalSeriesStartWrap" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(16,185,129,0.22);">
+          <label for="bookModalSeriesStart" style="display: block; font-size: 11px; font-weight: 600; margin-bottom: 4px;">Series Start Point</label>
+          <select id="bookModalSeriesStart" class="form-control" style="font-size: 12px;">
+            <option value="selected">📖 Start from this book</option>
+            <option value="active">🔖 Resume active unfinished book in series</option>
+            <option value="beginning">⏮️ Start from Book 1 (beginning of series)</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="bookModalUseMyAbsWrap"
+        style="display: none; margin-bottom: 14px; padding: 10px 12px; border-radius: 8px; background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.28);">
+        <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 12px; margin: 0;">
+          <input type="checkbox" id="bookModalUseMyAbs" style="margin-top: 2px;" onchange="onBookModalUseMyAbsToggle()">
+          <span id="bookModalUseMyAbsLabel">🎧 Play using my ABS account (overrides Target Player profile)</span>
+        </label>
+      </div>
+
+      <div class="form-actions" style="display: flex; flex-direction: column; gap: 8px;">
+        <button class="btn btn-primary" id="btnBookModalPlayNow" style="width: 100%;" onclick="executeBookPlay()">▶️ Play Now on Target
+          Player</button>
+        <button class="btn btn-secondary" style="width: 100%;" onclick="openLinkToCardModal()">💳 Assign to Specific
+          Card Slot...</button>
+        <button type="button" class="btn btn-secondary" style="width: 100%;" onclick="closeBookModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Link to Card Modal -->
+  <div class="modal-overlay" id="linkCardModal" style="display: none;">
+    <div class="modal-card" style="max-width: 400px;">
+      <div class="modal-header">
+        <h3 style="font-size: 15px; margin: 0;">Select Target Card Slot</h3>
+      </div>
+      <div class="form-group" style="margin: 14px 0;">
+        <label for="targetSlotSelect" style="font-size: 12px;">Choose Card Slot:</label>
+        <select id="targetSlotSelect" class="form-control">
+          <!-- Populated via JS -->
+        </select>
+      </div>
+      <div class="form-actions" style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn btn-secondary" onclick="closeLinkCardModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="executeAssignToSlot()">Save Assignment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Card Slot Modal -->
+  <div class="modal-overlay" id="addCardModal" style="display: none;">
+    <div class="modal-card" style="max-width: 400px;">
+      <div class="modal-header">
+        <h3 style="font-size: 15px; margin: 0;">Add Physical / Fleet Card</h3>
+      </div>
+      <div class="form-group" style="margin-top: 12px;">
+        <label for="newSlotId" style="font-size: 12px;">Slot ID / Nickname</label>
+        <input type="text" id="newSlotId" class="form-control" placeholder="e.g. dino_card">
+      </div>
+      <div class="form-group" style="margin-top: 8px;">
+        <label for="newSlotTitle" style="font-size: 12px;">Label / Description</label>
+        <input type="text" id="newSlotTitle" class="form-control" placeholder="e.g. Blue Dinosaur NFC Card">
+      </div>
+      <div class="form-group" style="margin-top: 8px;">
+        <label for="newSlotYotoCardSelect" style="font-size: 12px;">Assign Official Yoto Card (Optional)</label>
+        <select id="newSlotYotoCardSelect" class="form-control">
+          <option value="">-- Leave Empty / Assign Audiobook Later --</option>
+        </select>
+      </div>
+      <div class="form-actions" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+        <button class="btn btn-secondary" onclick="closeAddCardModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="executeCreateCardSlot()">Create Card</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Card Slot Modal (Rename / Move Personal <-> Fleet) -->
+  <div class="modal-overlay" id="editCardSlotModal" style="display: none;">
+    <div class="modal-card" style="max-width: 440px;">
+      <div class="modal-header">
+        <h2 style="margin-bottom: 4px;">✏️ Edit Card</h2>
+        <p class="text-secondary" style="margin-bottom: 14px; font-size: 12px;">Rename this card or move it between a
+          Profile and the shared Fleet.</p>
+      </div>
+      <form id="editCardSlotForm" onsubmit="event.preventDefault(); saveEditedCardSlot();">
+        <input type="hidden" id="editCardSlotId">
+        <div class="form-group">
+          <label for="editCardCustomId">StoryDeck Card ID (Editable — mark on physical card)</label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" id="editCardCustomId" class="form-control" required autocomplete="off"
+              style="flex: 1; font-family: monospace; font-size: 12px;" placeholder="e.g. CARD-01">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="startRePairFromEditModal()"
+              title="Re-pair this slot if the card was changed in the Yoto app">🔄 Re-Pair</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="editCardNickname">Card Nickname (Permanent)</label>
+          <input type="text" id="editCardNickname" class="form-control" required autocomplete="off"
+            placeholder="e.g. Blue Card">
+        </div>
+        <div class="form-group">
+          <label for="editCardKind">Card Group</label>
+          <select id="editCardKind" class="form-control" onchange="onEditCardKindChange()">
+            <option value="profile_primary">Profile Dedicated Card</option>
+            <option value="permanent_myo">Fleet / Multi-Use Card</option>
+          </select>
+        </div>
+        <div class="form-group" id="editCardProfileGroup">
+          <label for="editCardOwnerProfile">Assigned Profile</label>
+          <select id="editCardOwnerProfile" class="form-control"></select>
+        </div>
+        <div class="form-group">
+          <label for="editCardSeriesPacking">Offline Series Layout</label>
+          <select id="editCardSeriesPacking" class="form-control">
+            <option value="">Use Global Default</option>
+            <option value="chapters">Maintain Chapters (Rolling Whole Books, &le; 100 Tracks)</option>
+            <option value="condense">Condense Chapters into Parts (Max Books per Card)</option>
+          </select>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+          <button type="button" class="btn btn-secondary" onclick="closeEditCardSlotModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btnSaveEditCardSlot">💾 Save Card</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Pair Physical Card Modal -->
+  <div class="modal-overlay" id="pairCardModal" style="display: none;">
+    <div class="modal-card" style="max-width: 460px;">
+      <div class="modal-header">
+        <h2 style="margin-bottom: 4px;">🔗 Pair Physical Card</h2>
+        <p class="text-secondary" style="margin-bottom: 14px; font-size: 12px;">Insert a physical card into a Yoto
+          Player to detect whether it is an editable MYO card or a locked retail card.</p>
+      </div>
+      <div class="form-group">
+        <label for="pairDeviceSelect">Listening Yoto Player</label>
+        <select id="pairDeviceSelect" class="form-control" onchange="pollPairCard()"></select>
+      </div>
+      <div id="pairDetectStatus"
+        style="padding: 12px; border-radius: 8px; background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.25); font-size: 12px; margin-bottom: 14px;">
+        📡 Waiting for a card to be inserted...
+      </div>
+      <div id="pairCardOptions" style="display: none;">
+        <div class="form-group">
+          <label for="pairTargetType">Link As</label>
+          <select id="pairTargetType" class="form-control" onchange="onPairTargetTypeChange()">
+            <option value="profile">Profile Primary Card</option>
+            <option value="fleet">Fleet / Multi-Use MYO Card</option>
+          </select>
+        </div>
+        <div class="form-group" id="pairProfileGroup">
+          <label for="pairProfileSelect">Profile</label>
+          <select id="pairProfileSelect" class="form-control"></select>
+        </div>
+        <div class="form-group" id="pairFleetNameGroup" style="display: none;">
+          <label for="pairFleetName">Fleet Card Name</label>
+          <input type="text" id="pairFleetName" class="form-control" placeholder="e.g. Car Trip Card">
+        </div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
+        <button type="button" class="btn btn-secondary" onclick="closePairCardModal()">Close</button>
+        <button type="button" class="btn btn-primary" id="btnConfirmPairCard" style="display: none;"
+          onclick="confirmPairCard()">🔗 Pair Card</button>
+      </div>
+    </div>
+  </div>

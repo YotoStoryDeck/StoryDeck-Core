@@ -416,19 +416,6 @@ async function fetchAbsServerTags() {
   }
 }
 
-function populateAbsServerTagsDropdowns() {
-  const select = document.getElementById("absServerTagsDropdown");
-  if (!select) return;
-  select.innerHTML = '<option value="">-- Choose from Audiobookshelf tags --</option>';
-
-  cachedAbsServerTags.forEach(tag => {
-    const opt = document.createElement("option");
-    opt.value = tag;
-    opt.textContent = tag;
-    select.appendChild(opt);
-  });
-}
-
 async function addSelectedAbsDefaultTag() {
   const select = document.getElementById("absServerTagsDropdown");
   if (!select) return;

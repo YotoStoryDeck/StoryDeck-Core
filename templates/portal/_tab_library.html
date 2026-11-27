@@ -1,0 +1,36 @@
+        <!-- ===================================================================== -->
+        <!-- TAB 2: LIBRARY                                                        -->
+        <!-- ===================================================================== -->
+        <section id="tabLibrary" class="tab-view">
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <h3 style="font-size: 15px; margin: 0;">📚 Profile Library</h3>
+            <span id="libraryChildNameLabel" style="font-size: 11px; color: var(--accent-info);">Showing books for
+              Alex</span>
+          </div>
+
+          <!-- Search, Source & Series Filter -->
+          <div class="filter-bar">
+            <input type="text" id="librarySearchInput" class="form-control" style="flex: 2; min-width: 150px;"
+              placeholder="Search books &amp; Yoto cards..." oninput="filterLibraryGrid()">
+            <select id="librarySourceSelect" class="form-control" style="flex: 1; min-width: 120px;"
+              onchange="filterLibraryGrid()" title="Filter by Content Source">
+              <option value="">All Sources</option>
+              <option value="abs">Audiobookshelf</option>
+              <option value="yoto">Yoto Cards &amp; MYO</option>
+            </select>
+            <select id="librarySeriesSelect" class="form-control" style="flex: 1; min-width: 120px;"
+              onchange="filterLibraryGrid()">
+              <option value="">All Series / Groups</option>
+            </select>
+            <select id="librarySortSelect" class="form-control" style="flex: 1; min-width: 130px;"
+              onchange="filterLibraryGrid()" title="Sort Library">
+              <option value="name">🔤 Sort: Name (A–Z)</option>
+              <option value="series_order">📚 Sort: Series Order</option>
+            </select>
+          </div>
+
+          <!-- Library Grid -->
+          <div id="libraryGrid" class="library-grid">
+            <!-- Rendered via JS -->
+          </div>
+        </section>

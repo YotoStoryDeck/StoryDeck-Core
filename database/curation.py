@@ -4,12 +4,27 @@ import json
 import re
 import unicodedata
 import sqlite3
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 
 from .connection import get_db_connection, logger
 from .profiles import get_all_profiles
 from .media import get_catalog_matrix, get_playback_history, record_playback
+
+
+def build_catalog_thumb_url(item_id: str, cover_url: str, is_yoto: bool) -> str:
+    """Builds canonical version-hashed `/api/thumb` URL for ABS and Yoto catalog items."""
+    clean_cover = cover_url or ""
+    cover_v = hashlib.sha256(clean_cover.encode("utf-8")).hexdigest()[:8] if clean_cover else "1"
+    if is_yoto:
+        if clean_cover and not clean_cover.startswith("/api/thumb"):
+            return f"/api/thumb?type=yoto&id={item_id}&url={urllib.parse.quote(clean_cover)}&v={cover_v}"
+        if not clean_cover:
+            return f"/api/thumb?type=yoto&id={item_id}&v={cover_v}"
+        return clean_cover if "v=" in clean_cover else f"{clean_cover}{'&' if '?' in clean_cover else '?'}v={cover_v}"
+    base_t = clean_cover or f"/api/thumb?type=abs&id={item_id}"
+    return base_t if "v=" in base_t else f"{base_t}{'&' if '?' in base_t else '?'}v={cover_v}"
 
 def sanitize_display_text(text: str) -> str:
     """
@@ -148,19 +163,7 @@ def get_catalog_items_for_profile(profile_key: str, media_type: str = "abs", cli
                     "sequence_display": sub_seq_disp
                 })
 
-        cover_url = it.get("cover_url") or ""
-        cover_v = hashlib.sha256(cover_url.encode("utf-8")).hexdigest()[:8] if cover_url else "1"
-        if media_type == "yoto":
-            if cover_url and not cover_url.startswith("/api/thumb"):
-                import urllib.parse
-                thumb = f"/api/thumb?type=yoto&id={it.get('id', '')}&url={urllib.parse.quote(cover_url)}&v={cover_v}"
-            elif not cover_url:
-                thumb = f"/api/thumb?type=yoto&id={it.get('id', '')}&v={cover_v}"
-            else:
-                thumb = cover_url if "v=" in cover_url else f"{cover_url}{'&' if '?' in cover_url else '?'}v={cover_v}"
-        else:
-            base_t = cover_url or f"/api/thumb?type=abs&id={it.get('id', '')}"
-            thumb = base_t if "v=" in base_t else f"{base_t}{'&' if '?' in base_t else '?'}v={cover_v}"
+        thumb = build_catalog_thumb_url(it.get("id") or "", it.get("cover_url") or "", is_yoto=(media_type == "yoto"))
 
         entry = {
             "id": it.get("id"),

@@ -12,41 +12,55 @@ export const CatalogScreen = {
     const players = isStandalone ? state.getAllAvailablePlayers() : (p.players || []);
     const activeDev = state.activeDevice || state.resolveActiveDevice(isStandalone ? null : p);
     const hasMultiple = players.length > 1;
-    const isAway = activeDev && activeDev.online && activeDev.is_home === false;
-    const devStatusIcon = isAway ? '✈️' : (activeDev?.is_playing ? '▶' : (activeDev?.online ? '●' : '○'));
-    const devStatusClass = isAway ? 'status-away' : (activeDev?.is_playing ? 'status-playing' : (activeDev?.online ? 'status-online' : 'status-offline'));
+    const _ui = (typeof window !== 'undefined' && window.StoryDeckUI) ? window.StoryDeckUI : null;
+    const devMeta = _ui ? _ui.getDeviceStatusMeta(activeDev) : (() => {
+      const isAway = activeDev && activeDev.online && activeDev.is_home === false;
+      return {
+        isAway,
+        icon: isAway ? '✈️' : (activeDev?.is_playing ? '▶' : (activeDev?.online ? '●' : '○')),
+        statusClass: isAway ? 'status-away' : (activeDev?.is_playing ? 'status-playing' : (activeDev?.online ? 'status-online' : 'status-offline')),
+      };
+    })();
+    const devStatusIcon = devMeta.icon;
+    const devStatusClass = devMeta.statusClass;
     // Dropdown options if picker is open (and player is not locked)
     const pickerDropdown = (state.isDevicePickerOpen && hasMultiple && !isLocked) ? `
       <div class="device-dropdown">
         <div class="dropdown-header">Select Target Player</div>
         ${players.map(d => {
           const isSelected = d.id === activeDev?.id;
-          const isPlay = d.is_playing;
-          const isOnline = d.online;
-          const dAway = isOnline && d.is_home === false;
+          const dMeta = _ui ? _ui.getDeviceStatusMeta(d) : {
+            isAway: d.online && d.is_home === false,
+            isPlaying: d.is_playing,
+            icon: (d.online && d.is_home === false) ? '✈️' : (d.is_playing ? '▶' : '●'),
+            dotClass: (d.online && d.is_home === false) ? 'dot-away' : (d.is_playing ? 'dot-play' : (d.online ? 'dot-on' : 'dot-off')),
+          };
           return `
             <div class="device-opt ${isSelected ? 'selected' : ''}" data-act="select-device" data-device-id="${Utils.esc(d.id)}">
-              <span class="dev-dot ${dAway ? 'dot-away' : (isPlay ? 'dot-play' : (isOnline ? 'dot-on' : 'dot-off'))}">
-                ${dAway ? '✈️' : (isPlay ? '▶' : '●')}
+              <span class="dev-dot ${dMeta.dotClass}">
+                ${dMeta.icon === '○' ? '●' : dMeta.icon}
               </span>
               <span class="dev-name">${Utils.esc(d.name)}</span>
-              ${dAway ? '<span class="dev-tag" style="background:#ea580c; color:#fff;">AWAY</span>' : ''}
+              ${dMeta.isAway ? '<span class="dev-tag" style="background:#ea580c; color:#fff;">AWAY</span>' : ''}
               ${d.id === p.default_player_id ? '<span class="dev-tag">DEFAULT</span>' : ''}
-              ${isPlay ? '<span class="dev-tag play">PLAYING</span>' : ''}
+              ${dMeta.isPlaying ? '<span class="dev-tag play">PLAYING</span>' : ''}
             </div>
           `;
         }).join('')}
       </div>
     ` : '';
+    const profAvatarHtml = _ui
+      ? _ui.renderProfileAvatarHtml(p, 24)
+      : ((p.avatar_url && p.avatar_url.includes('?t='))
+        ? `<img src="${Utils.esc(p.avatar_url)}" onerror="this.style.display='none'">`
+        : `<span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:${Utils.esc(p.avatar_color || '#e5352b')};color:#fff;font-size:12px;font-weight:800;">${Utils.esc(p.avatar_initial || (p.display_name || 'P').charAt(0).toUpperCase())}</span>`);
     return `
       <div class="topnav">
         <div class="topnav-left">
           ${!isStandalone ? `
             <!-- Core Mode: Profile Selector Pill (only clickable if allow_profile_switch is true) -->
             <div class="prof-pill" ${state.deviceConfig?.allow_profile_switch !== false && state.profiles.length > 1 ? 'data-act="switch-profile" title="Switch profile"' : 'style="cursor:default;" title="Assigned profile"'}>
-              ${(p.avatar_url && p.avatar_url.includes('?t='))
-                ? `<img src="${Utils.esc(p.avatar_url)}" onerror="this.style.display='none'">`
-                : `<span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:${Utils.esc(p.avatar_color || '#e5352b')};color:#fff;font-size:12px;font-weight:800;">${Utils.esc(p.avatar_initial || (p.display_name || 'P').charAt(0).toUpperCase())}</span>`}
+              ${profAvatarHtml}
               <span>${Utils.esc(p.display_name)}</span>
               ${state.deviceConfig?.allow_profile_switch !== false && state.profiles.length > 1 ? '<span style="font-size:10px; color:#8a8276;">&#9660;</span>' : ''}
             </div>
@@ -76,15 +90,21 @@ export const CatalogScreen = {
     `;
   },
   cleanTitle(t) {
+    if (typeof window !== 'undefined' && window.StoryDeckSeries) {
+      return window.StoryDeckSeries.cleanTitleForSort(t);
+    }
     return (t || '').replace(/^(the|a|an)\s+/i, '').trim().toLowerCase();
   },
   renderSeriesView() {
+    const sharedSeries = (typeof window !== 'undefined' && window.StoryDeckSeries) ? window.StoryDeckSeries : null;
     // Group books by series name, supporting cards belonging to multiple series/groups
     const groups = new Map();
     state.catalog.forEach(item => {
-      const seriesEntries = (item.series_list && item.series_list.length > 0)
-        ? item.series_list
-        : (item.series ? [{ name: item.series, sequence: item.sequence }] : []);
+      const seriesEntries = sharedSeries
+        ? sharedSeries.extractItemSeriesList(item)
+        : ((item.series_list && item.series_list.length > 0)
+            ? item.series_list
+            : (item.series ? [{ name: item.series, sequence: item.sequence }] : []));
       if (seriesEntries.length === 0) {
         const groupName = 'Standalone & Singles';
         if (!groups.has(groupName)) {
@@ -101,8 +121,10 @@ export const CatalogScreen = {
             if (!groups.has(groupName)) {
               groups.set(groupName, []);
             }
-            let gSeq = entry.sequence != null ? entry.sequence : item.sequence;
-            let gDisp = entry.sequence_display || item.sequence_display || (entry.sequence != null ? String(entry.sequence) : (item.sequence != null ? String(item.sequence) : null));
+            const rawSeq = entry.order || entry.sequence_display || (entry.sequence != null ? String(entry.sequence) : '') || (item.sequence != null ? String(item.sequence) : '');
+            const parsed = sharedSeries ? sharedSeries.parseSequenceOrder(rawSeq) : null;
+            let gSeq = (parsed && parsed.hasNum) ? parsed.num : (entry.sequence != null ? entry.sequence : item.sequence);
+            let gDisp = rawSeq || item.sequence_display || (gSeq != null ? String(gSeq) : null);
             if (gSeq == null && !gDisp) {
               const m = (item.title || '').match(/#(\d+(?:\.\d+)?)/);
               if (m) {

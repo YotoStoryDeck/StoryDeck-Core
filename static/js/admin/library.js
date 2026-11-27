@@ -2,13 +2,6 @@
 // Curation Matrix (Tab 2)
 // ============================================================================
 
-// Helper to clean titles for article-insensitive sorting (shared via StoryDeckSeries)
-function cleanTitleForSort(str) {
-  if (window.StoryDeckSeries) return window.StoryDeckSeries.cleanTitleForSort(str);
-  if (!str) return "";
-  return String(str).replace(/^(the|a|an)\s+/i, "").trim().toLowerCase();
-}
-
 function onCurationSortOrSeriesChange() {
   renderMatrixTable();
   filterMatrix();
@@ -185,7 +178,7 @@ function renderMatrixTable() {
         const hiA = !!a.is_highlight;
         const hiB = !!b.is_highlight;
         if (hiA !== hiB) return hiA ? -1 : 1;
-        return cleanTitleForSort(a.title).localeCompare(cleanTitleForSort(b.title));
+        return String(a.title || "").localeCompare(String(b.title || ""));
       });
 
   sortedItems.forEach(item => {
@@ -347,15 +340,6 @@ function renderMatrixTable() {
 
   filterMatrix();
   updateBulkActionBar();
-}
-
-function normalizeSeriesEntry(rawName, rawOrder = "") {
-  if (window.StoryDeckSeries) {
-    return window.StoryDeckSeries.normalizeSeriesEntry(rawName, rawOrder);
-  }
-  const name = String(rawName || "").trim();
-  const order = String(rawOrder || "").trim();
-  return name ? { name, order } : null;
 }
 
 function populateSeriesFilterDropdown() {

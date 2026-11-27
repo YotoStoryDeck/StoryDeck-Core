@@ -1,0 +1,31 @@
+        <!-- ===================================================================== -->
+        <!-- TAB 4: PLAYLISTS (CLOUD AUDIO MANIFESTS)                               -->
+        <!-- ===================================================================== -->
+        <section id="tabPlaylists" class="tab-view">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 15px; margin: 0;">☁️ Yoto Cloud Playlists</h3>
+            <button class="btn btn-secondary btn-sm" onclick="triggerManualPrune()"
+              title="Removes evicted StoryDeck-created playlists while preserving pinned cards">⚡ Prune StoryDeck
+              Caches</button>
+          </div>
+          <p class="text-secondary" style="font-size: 11px; margin-top: 4px; margin-bottom: 10px;">
+            All playlists on your Yoto Cloud account. Pin playlists to protect them from automated LRU cleaning.
+          </p>
+
+          <!-- Filter Chips -->
+          <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;">
+            <button class="btn btn-sm btn-primary" id="chipAll" onclick="setPlaylistFilter('all')">All (<span
+                id="countAll">0</span>)</button>
+            <button class="btn btn-sm btn-secondary" id="chipBroker" onclick="setPlaylistFilter('broker')">📻 StoryDeck
+              Caches (<span id="countBroker">0</span>)</button>
+            <button class="btn btn-sm btn-secondary" id="chipCustom" onclick="setPlaylistFilter('custom')">🎵 Custom /
+              External (<span id="countCustom">0</span>)</button>
+            <button class="btn btn-sm btn-secondary" id="chipPinned" onclick="setPlaylistFilter('pinned')">📌 Pinned
+              (<span id="countPinned">0</span>)</button>
+          </div>
+
+          <!-- Playlists List -->
+          <div id="playlistsList" class="item-list">
+            <!-- Populated via JS -->
+          </div>
+        </section>

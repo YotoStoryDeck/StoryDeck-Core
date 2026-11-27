@@ -74,23 +74,31 @@ export const CONFIG = {
 /**
  * Global Utility Functions
  */
+const _ui = (typeof window !== "undefined" && window.StoryDeckUI) ? window.StoryDeckUI : null;
+
 export const Utils = {
-  esc: (s) => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;'
-  }[c])),
+  esc: (s) => _ui
+    ? _ui.escapeHtml(s)
+    : (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;'
+      }[c])),
 
-  mmss: (s) => {
-    s = Math.max(0, Math.round(s || 0));
-    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
-  },
+  mmss: (s) => _ui
+    ? _ui.formatSeconds(s)
+    : (() => {
+        s = Math.max(0, Math.round(s || 0));
+        return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      })(),
 
-  longdur: (s) => {
-    s = Math.round(s || 0);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    return h ? `${h}h ${m}m` : `${m}m`;
-  }
+  longdur: (s) => _ui
+    ? _ui.formatDuration(s)
+    : (() => {
+        s = Math.round(s || 0);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        return h ? `${h}h ${m}m` : `${m}m`;
+      })()
 };

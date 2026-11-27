@@ -176,9 +176,7 @@ def get_bridge_mqtt_status():
 
 def _query_profile_library_catalog(profile_id: str) -> List[Dict[str, Any]]:
     """Builds the combined curated ABS + Yoto catalog list (matching Kiosk) for a profile or '__all__' household view."""
-    import hashlib
-    import urllib.parse
-    from database.curation import get_catalog_items_for_profile, sanitize_display_text
+    from database.curation import build_catalog_thumb_url, get_catalog_items_for_profile, sanitize_display_text
     from database.media import get_all_playback_history
 
     if profile_id == "__all__":
@@ -193,18 +191,7 @@ def _query_profile_library_catalog(profile_id: str) -> List[Dict[str, Any]]:
                 continue
 
             item_id = it.get("id") or ""
-            cover_url = it.get("cover_url") or ""
-            cover_v = hashlib.sha256(cover_url.encode("utf-8")).hexdigest()[:8] if cover_url else "1"
-            if is_yoto:
-                if cover_url and not cover_url.startswith("/api/thumb"):
-                    thumb = f"/api/thumb?type=yoto&id={item_id}&url={urllib.parse.quote(cover_url)}&v={cover_v}"
-                elif not cover_url:
-                    thumb = f"/api/thumb?type=yoto&id={item_id}&v={cover_v}"
-                else:
-                    thumb = cover_url if "v=" in cover_url else f"{cover_url}{'&' if '?' in cover_url else '?'}v={cover_v}"
-            else:
-                base_t = cover_url or f"/api/thumb?type=abs&id={item_id}"
-                thumb = base_t if "v=" in base_t else f"{base_t}{'&' if '?' in base_t else '?'}v={cover_v}"
+            thumb = build_catalog_thumb_url(item_id, it.get("cover_url") or "", is_yoto=is_yoto)
 
             results.append({
                 "id": item_id,

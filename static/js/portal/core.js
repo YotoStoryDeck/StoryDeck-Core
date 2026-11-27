@@ -405,24 +405,3 @@ function switchActiveProfile(profileId) {
   loadLibrary();
   loadContinueListening();
 }
-
-// -----------------------------------------------------------------------------
-// Utilities
-// -----------------------------------------------------------------------------
-
-function formatSeconds(secs) {
-  const s = Math.floor(secs || 0);
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return `${m}:${rem < 10 ? '0' : ''}${rem}`;
-}
-
-function escapeHtml(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
