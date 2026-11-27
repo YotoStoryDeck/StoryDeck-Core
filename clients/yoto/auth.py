@@ -96,6 +96,22 @@ class YotoAuthMixin:
 
     def get_auth_status(self, verify: bool = True, force: bool = False) -> Dict[str, Any]:
         """Returns structured Yoto API token health status for UI indicators and feature lockout."""
+        # Sync client_id / refresh_token from SQLite in case another worker or OAuth callback updated them
+        try:
+            import database
+            db_creds = database.get_api_credentials()
+            db_cid = (db_creds.get("yoto_client_id") or "").strip()
+            db_ref = (db_creds.get("yoto_refresh_token") or "").strip()
+            with self._token_lock:
+                if not self.client_id and db_cid:
+                    self.client_id = db_cid
+                if db_ref and (not self.refresh_token or (db_cid == self.client_id and db_ref != self.refresh_token)):
+                    self.refresh_token = db_ref
+                    if self.token_healthy is False:
+                        self.token_healthy = None
+        except Exception:
+            pass
+
         has_client_id = bool(self.client_id)
         has_refresh = bool(self.refresh_token)
 

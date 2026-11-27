@@ -728,9 +728,17 @@ class TestBridgeEngine(unittest.TestCase):
 
             mgr = get_bridge_manager()
             mgr.assign_abs_book_to_slot(slot_id="slot_pack_ov", abs_item_id="item_pack", title="Pack Book", mode="offline")
-            res_slot = self.app.put("/api/cards/slot_pack_ov", json={"series_packing": "chapters"})
+            res_slot = self.app.put("/api/cards/slot_pack_ov", json={
+                "new_slot_id": "slot_pack_ov",
+                "nickname": "Updated Fleet",
+                "kind": "permanent_myo",
+                "owner_profile_id": "",
+                "series_packing": "chapters",
+            })
             self.assertEqual(res_slot.status_code, 200)
             slot = mgr.get_slot("slot_pack_ov")
+            self.assertIsNone(slot.get("owner_profile_id"))
+            self.assertEqual(slot.get("nickname"), "Updated Fleet")
             self.assertEqual(slot.get("series_packing"), "chapters")
             self.assertEqual(resolve_series_packing(slot), "chapters")
 

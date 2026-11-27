@@ -124,11 +124,11 @@ def update_card(slot_id: str):
     if "kind" in data and data["kind"] in ("profile_primary", "permanent_myo"):
         updates["kind"] = data["kind"]
         if data["kind"] == "permanent_myo":
-            updates["owner_profile_id"] = ""
+            updates["owner_profile_id"] = None
         elif "owner_profile_id" in data:
-            updates["owner_profile_id"] = str(data.get("owner_profile_id") or "").strip()
+            updates["owner_profile_id"] = str(data.get("owner_profile_id") or "").strip() or None
     elif "owner_profile_id" in data:
-        updates["owner_profile_id"] = str(data.get("owner_profile_id") or "").strip()
+        updates["owner_profile_id"] = str(data.get("owner_profile_id") or "").strip() or None
 
     if updates:
         old_owner = str(slot.get("owner_profile_id") or "").strip()
@@ -139,7 +139,7 @@ def update_card(slot_id: str):
         with database.get_db_connection() as conn:
             conn.execute(f"UPDATE bridge_slots SET {set_clause} WHERE slot_id = ?;", params)
             conn.commit()
-        new_owner = updates.get("owner_profile_id", old_owner)
+        new_owner = str((updates["owner_profile_id"] if "owner_profile_id" in updates else old_owner) or "").strip()
         if old_owner and old_owner != new_owner:
             old_prof = database.get_profile_by_id(old_owner)
             if old_prof and str(old_prof.get("primary_card_id") or "") == old_yoto_cid:

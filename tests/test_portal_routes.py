@@ -221,6 +221,31 @@ class TestPortalRoutes(unittest.TestCase):
         self.assertIn(b"Yoto API Token Not Resolving", res.data)
         self.assertIn(b"btnRetryYotoAuth", res.data)
 
+    def test_yoto_auth_status_syncs_refresh_token_from_sqlite(self):
+        """Verifies YotoClient.get_auth_status() picks up a persisted refresh_token from SQLite instead of returning missing_credentials."""
+        orig_creds = database.get_api_credentials()
+        yc = YotoClient(client_id="cid_sync", refresh_token="")
+        mock_res = MagicMock()
+        mock_res.status_code = 200
+        mock_res.json.return_value = {
+            "access_token": "tok_synced",
+            "refresh_token": "rot_ref_synced",
+            "expires_in": 3600
+        }
+
+        try:
+            database.update_api_credentials({"yoto_client_id": "cid_sync", "yoto_refresh_token": "db_ref_1"})
+            with patch.object(clients, "yoto_client", yc), \
+                 patch("requests.post", return_value=mock_res):
+                res = self.app.get("/api/yoto/auth-status", environ_base={"REMOTE_ADDR": "192.168.1.100"})
+                self.assertEqual(res.status_code, 200)
+                data = res.get_json()
+                self.assertTrue(data["token_valid"])
+                self.assertTrue(data["connected"])
+                self.assertEqual(data["reason"], "ok")
+        finally:
+            database.update_api_credentials(orig_creds)
+
 
 if __name__ == "__main__":
     unittest.main()
