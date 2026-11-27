@@ -42,7 +42,7 @@ Zero external bridge container required — all streaming, transcoding, icon ren
 ---
 
 ### 3. 🤹 Self-Contained Tablet Kiosk (`/kiosk/`)
-Built specifically for bedside iPads (including older Safari/WebKit tablets), Android/Fire tablets, and wall displays:
+Built specifically for modern bedside iPads (iPadOS 14+), Android/Fire tablets, and wall displays:
 * **Zero External CDN Dependencies:** Self-hosted `Fredoka` font (`static/kiosk/fonts/fredoka-latin.woff2`), custom **StoryDeck** vector & high-DPI raster app icons (`icon.svg`, `icon-192.png`, `icon-512.png`, `180×180` `apple-touch-icon.png`), Screen Wake Lock API, `100dvh` viewport, and iOS safe-area insets.
 * **Smooth Responsive Performance:** Single-request `GET /api/kids/<child>/catalog` endpoint with stale-while-revalidate caching, in-place telemetry & `PlayerScreen.tick()` updates without DOM wipes, deterministic intrinsic-ratio catalog grid tiles, and fluid Night Clock screensaver.
 * **Smart Mode Adaptation:** Client-side search across title/author/series, `abs_configured`-gated `All` / `ABS` / `Yoto` source filter chips (automatically hidden in Yoto-only standalone deployments), profile & player-scoped **Recently Played** (`device:<id>` history), pointer-drag scrub/volume bars, resolution presets (`?tablet10`, `?tablet43`, `?tablet8`, `?1080p`), and instant 4-digit PIN Grown-Ups gate.
