@@ -253,8 +253,12 @@ def get_catalog_items_for_profile(profile_key: str, media_type: str = "abs", cli
     # Sort recent tier newest first (lexical sort on ISO timestamp descending)
     recent_items.sort(key=lambda x: str(x.get("_last_played_at") or ""), reverse=True)
     recent_tier = recent_items[:8]
-    # Any overflow recent items move to pool
-    pool_items.extend(recent_items[8:])
+    # Preserve sticky highlights that overflow the top 8 recent items; others move to discovery pool
+    for overflow in recent_items[8:]:
+        if overflow.get("is_highlight"):
+            highlight_items.append(overflow)
+        else:
+            pool_items.append(overflow)
 
     # Sort highlight tier alphabetically ignoring articles
     def _clean_title(t):

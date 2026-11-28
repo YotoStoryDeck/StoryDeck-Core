@@ -966,6 +966,48 @@ class TestSeriesOverridesAndAdminSeries(IsolatedTestCase):
         ):
             self.assertIn(token, html, f"Expected {token} in /admin HTML")
 
+    def test_09_sticky_highlight_overflow_stays_prioritized(self):
+        """Highlights with older last_played_at beyond top-8 recent still sort before discovery pool."""
+        prof_id = "hl_overflow_prof"
+        database.upsert_profile(prof_id, {"display_name": "Highlight Test", "catalog_rotation_limit": 20})
+        media_items = []
+        allowed_ids = []
+        for idx in range(9):
+            mid = f"hl_recent_{idx}"
+            allowed_ids.append(mid)
+            media_items.append({
+                "id": mid, "type": "abs", "title": f"Recent Book {idx}",
+                "author": "Author", "cover_url": "", "series": "",
+            })
+        sticky_mid = "hl_sticky_older"
+        allowed_ids.append(sticky_mid)
+        media_items.append({
+            "id": sticky_mid, "type": "abs", "title": "Sticky Highlight Favorite",
+            "author": "Author", "cover_url": "", "series": "", "is_highlight": True,
+        })
+        pool_mid = "hl_pool_unplayed"
+        allowed_ids.append(pool_mid)
+        media_items.append({
+            "id": pool_mid, "type": "abs", "title": "Unplayed Discovery Item",
+            "author": "Author", "cover_url": "", "series": "", "is_highlight": False,
+        })
+
+        database.upsert_media_items(media_items)
+        database.set_item_highlight(sticky_mid, True)
+        database.batch_update_profile_media_permissions(allowed_ids, {prof_id: "allow"})
+
+        # Record 9 recent items newer than the sticky highlighted item
+        for idx in range(9):
+            database.record_playback(f"hl_recent_{idx}", prof_id, f"2026-11-27T10:0{idx}:00+00:00")
+        database.record_playback(sticky_mid, prof_id, "2026-11-20T08:00:00+00:00")
+
+        catalog = database.get_catalog_items_for_profile(prof_id, "abs", client_type="touch")
+        ids_order = [it["id"] for it in catalog]
+        self.assertIn(sticky_mid, ids_order)
+        self.assertIn(pool_mid, ids_order)
+        self.assertLess(ids_order.index(sticky_mid), ids_order.index(pool_mid))
+        self.assertEqual(ids_order.index(sticky_mid), 8)
+
 
 if __name__ == "__main__":
     unittest.main()
