@@ -492,6 +492,131 @@ def batch_update_profile_media_permissions(media_ids: List[str], profile_actions
             }
     finally:
         conn.close()
+
+
+def _series_item_sort_key(entry: Dict[str, Any]):
+    """Sort key ordering series items by numeric sequence, then sequence_display, then title."""
+    sq = entry.get("sequence")
+    if sq is not None and sq >= 0.0:
+        return (0, float(sq), str(entry.get("title") or "").lower())
+    disp = str(entry.get("sequence_display") or "").strip()
+    return (1, disp.lower() if disp else "zzzz", str(entry.get("title") or "").lower())
+
+
+def _clean_article_title(title: str) -> str:
+    return re.sub(r"^(the|a|an)\s+", "", (title or "").strip(), flags=re.IGNORECASE).lower()
+
+
+def _iter_allowed_items_for_series(profile_key: str):
+    """Yields raw catalog matrix items accessible to `profile_key` (or all items for '__all__')."""
+    from .settings import get_system_settings
+    matrix = get_catalog_matrix()
+    items = matrix.get("items", [])
+    profiles = get_all_profiles()
+    pkey = (profile_key or "").strip().lower()
+    is_all = pkey in ("__all__", "all", "standalone")
+    pcfg = profiles.get(pkey, {}) if not is_all else {}
+    hide_physical = bool(pcfg.get("hide_physical", False))
+    settings = get_system_settings()
+    exclude_single = bool(settings.get("exclude_single_card_series", True))
+
+    allowed = []
+    for it in items:
+        m_type = str(it.get("type") or "")
+        if m_type != "abs" and not m_type.startswith("yoto"):
+            continue
+        if not is_all and not it.get("profiles", {}).get(pkey, {}).get("allowed"):
+            continue
+        if hide_physical and bool(it.get("has_physical", False)):
+            continue
+        allowed.append(it)
+    return allowed, exclude_single
+
+
+def get_series_summary_for_profile(profile_key: str) -> List[Dict[str, Any]]:
+    """
+    Returns a lightweight list of all accessible series for `profile_key` across the entire
+    library (ignoring the 60-card catalog rotation limit), sorted alphabetically.
+    """
+    allowed, exclude_single = _iter_allowed_items_for_series(profile_key)
+    groups: Dict[str, Dict[str, Any]] = {}
+
+    for it in allowed:
+        p_ser = sanitize_display_text((it.get("series") or "").strip())
+        memberships = []
+        if p_ser:
+            memberships.append(p_ser)
+        for extra in (it.get("series_list") or []):
+            ex_name = sanitize_display_text((extra.get("name") or "").strip())
+            if ex_name:
+                memberships.append(ex_name)
+        seen_grp = set()
+        for gname in memberships:
+            gkey = gname.lower()
+            if gkey in seen_grp:
+                continue
+            seen_grp.add(gkey)
+            grp = groups.setdefault(gkey, {"name": gname, "items": {}, "display_names": {}})
+            grp["items"][it["id"]] = it
+
+    summaries: List[Dict[str, Any]] = []
+    for gkey, grp in groups.items():
+        book_list = list(grp["items"].values())
+        if exclude_single and len(book_list) <= 1:
+            continue
+        parsed_books = []
+        for b in book_list:
+            sq, sq_disp = _parse_seq(b.get("series_order"), sanitize_display_text(b.get("title") or ""))
+            parsed_books.append({
+                "raw": b,
+                "sequence": sq,
+                "sequence_display": sq_disp,
+                "title": sanitize_display_text(b.get("title") or ""),
+            })
+        parsed_books.sort(key=_series_item_sort_key)
+        lead_raw = parsed_books[0]["raw"]
+        lead_id = str(lead_raw.get("id") or "")
+        lead_type = str(lead_raw.get("type") or "yoto")
+        summaries.append({
+            "name": grp["name"],
+            "count": len(parsed_books),
+            "cover": build_catalog_thumb_url(lead_id, lead_raw.get("cover_url") or "", is_yoto=(lead_type != "abs")),
+            "cover_id": lead_id,
+            "source": "abs" if lead_type == "abs" else "yoto",
+        })
+
+    summaries.sort(key=lambda s: _clean_article_title(s["name"]))
+    return summaries
+
+
+def get_series_items_for_profile(profile_key: str, series_name: str) -> List[Dict[str, Any]]:
+    """
+    Returns all accessible cards/books in `series_name` (case-insensitive) for `profile_key`,
+    serialized in sequence order.
+    """
+    target = sanitize_display_text((series_name or "").strip()).lower()
+    if not target:
+        return []
+    allowed, _ = _iter_allowed_items_for_series(profile_key)
+    playback_history = get_playback_history((profile_key or "").strip().lower())
+    results: List[Dict[str, Any]] = []
+
+    for it in allowed:
+        p_ser = sanitize_display_text((it.get("series") or "").strip()).lower()
+        ex_names = [
+            sanitize_display_text((ex.get("name") or "").strip()).lower()
+            for ex in (it.get("series_list") or [])
+        ]
+        if p_ser != target and target not in ex_names:
+            continue
+        m_type = str(it.get("type") or "")
+        media_kind = "abs" if m_type == "abs" else "yoto"
+        entry = _serialize_catalog_entry(it, media_kind, playback_history)
+        entry.pop("_last_played_at", None)
+        results.append(entry)
+
+    results.sort(key=_series_item_sort_key)
+    return results
 # ============================================================================
 # System Settings DAO
 # ============================================================================

@@ -190,6 +190,23 @@ def get_child_yoto(child_name: str):
     return jsonify(_fetch_child_yoto_items(child_name, _resolve_client_type(), dev_id))
 
 
+@esp32_bp.route("/api/kids/<child_name>/series", methods=["GET"])
+@require_device_jwt
+def get_child_series_summary(child_name: str):
+    """Returns lightweight summary list of all accessible series for a profile."""
+    return jsonify(database.get_series_summary_for_profile(child_name.lower()))
+
+
+@esp32_bp.route("/api/kids/<child_name>/series/items", methods=["GET"])
+@require_device_jwt
+def get_child_series_items(child_name: str):
+    """Returns all allowed books/cards belonging to a specific series for a profile."""
+    series_name = (request.args.get("name") or "").strip()
+    if not series_name:
+        return jsonify({"ok": False, "error": "Missing query parameter 'name'"}), 400
+    return jsonify(database.get_series_items_for_profile(child_name.lower(), series_name))
+
+
 @esp32_bp.route("/api/kids/<child_name>/catalog", methods=["GET"])
 @require_device_jwt
 def get_child_combined_catalog(child_name: str):

@@ -1008,6 +1008,48 @@ class TestSeriesOverridesAndAdminSeries(IsolatedTestCase):
         self.assertLess(ids_order.index(sticky_mid), ids_order.index(pool_mid))
         self.assertEqual(ids_order.index(sticky_mid), 8)
 
+    def test_10_full_series_index_and_on_demand_items(self):
+        """Series index returns all profile series past catalog_rotation_limit, and /series/items returns ordered books."""
+        prof_id = "series_full_prof"
+        database.upsert_profile(prof_id, {"display_name": "Full Series Profile", "catalog_rotation_limit": 4})
+
+        # Create 2 distinct multi-book series (6 books total > rotation limit 4) + 1 single-book series
+        items = [
+            {"id": "sf_a1", "type": "abs", "title": "Alpha Book 1", "author": "A", "cover_url": "", "series": "Alpha Adventures", "series_order": "1"},
+            {"id": "sf_a2", "type": "abs", "title": "Alpha Book 2", "author": "A", "cover_url": "", "series": "Alpha Adventures", "series_order": "2"},
+            {"id": "sf_a3", "type": "abs", "title": "Alpha Book 3", "author": "A", "cover_url": "", "series": "Alpha Adventures", "series_order": "3"},
+            {"id": "sf_z1", "type": "yoto", "title": "Zeta Tale 2", "author": "Z", "cover_url": "", "series": "Zeta Quests", "series_order": "2"},
+            {"id": "sf_z2", "type": "yoto", "title": "Zeta Tale 1", "author": "Z", "cover_url": "", "series": "Zeta Quests", "series_order": "1"},
+            {"id": "sf_z3", "type": "yoto", "title": "Zeta Tale 3", "author": "Z", "cover_url": "", "series": "Zeta Quests", "series_order": "3"},
+            {"id": "sf_single", "type": "abs", "title": "Lonely Saga #1", "author": "L", "cover_url": "", "series": "One Off Series", "series_order": "1"},
+        ]
+        database.upsert_media_items(items)
+        database.batch_update_profile_media_permissions([it["id"] for it in items], {prof_id: "allow"})
+        database.set_system_setting("exclude_single_card_series", True)
+
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = "series_admin"
+            sess["username"] = "admin"
+            sess["role"] = "admin"
+
+        res_idx = self.client.get(f"/api/kids/{prof_id}/series")
+        self.assertEqual(res_idx.status_code, 200)
+        series_list = res_idx.get_json()
+        names = [s["name"] for s in series_list]
+        self.assertEqual(names, ["Alpha Adventures", "Zeta Quests"])
+        self.assertEqual(series_list[0]["count"], 3)
+        self.assertEqual(series_list[0]["cover_id"], "sf_a1")
+        self.assertEqual(series_list[1]["count"], 3)
+        self.assertEqual(series_list[1]["cover_id"], "sf_z2")
+
+        res_bad = self.client.get(f"/api/kids/{prof_id}/series/items")
+        self.assertEqual(res_bad.status_code, 400)
+
+        res_books = self.client.get(f"/api/kids/{prof_id}/series/items?name=Zeta%20Quests")
+        self.assertEqual(res_books.status_code, 200)
+        books = res_books.get_json()
+        self.assertEqual([b["id"] for b in books], ["sf_z2", "sf_z1", "sf_z3"])
+
 
 if __name__ == "__main__":
     unittest.main()

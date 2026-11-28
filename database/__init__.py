@@ -29,7 +29,8 @@ from .media import (
     batch_set_media_series_overrides
 )
 from .curation import (
-    sanitize_display_text, get_catalog_items_for_profile, get_catalog_items_for_device, set_item_highlight,
+    sanitize_display_text, get_catalog_items_for_profile, get_catalog_items_for_device,
+    get_series_summary_for_profile, get_series_items_for_profile, set_item_highlight,
     batch_update_media_highlight, set_item_physical, batch_update_media_physical,
     batch_update_profile_media_permissions
 )
@@ -62,7 +63,8 @@ __all__ = [
     "record_playback", "get_playback_history", "get_device_playback_history",
     "get_all_series_overrides", "set_media_series_override", "delete_media_series_override",
     "batch_set_media_series_overrides",
-    "sanitize_display_text", "get_catalog_items_for_profile", "get_catalog_items_for_device", "set_item_highlight",
+    "sanitize_display_text", "get_catalog_items_for_profile", "get_catalog_items_for_device",
+    "get_series_summary_for_profile", "get_series_items_for_profile", "set_item_highlight",
     "batch_update_media_highlight", "set_item_physical", "batch_update_media_physical",
     "batch_update_profile_media_permissions",
     "DEFAULT_SSO_CONFIG", "get_system_settings", "get_sso_config", "set_system_setting", "get_api_credentials", "update_api_credentials",
